@@ -1,0 +1,25 @@
+// Osysharp.Organizations.Accounts — the service an organisation you SERVE gets: the tier it is on, what it is entitled
+// to, the account team looking after it, and its VIP people. Carried for the kits that route and promise by them (the
+// Inbox chooses a queue, an owner and an SLA by them); decided by the app alone.
+//
+// ⚑ AN ADD-ON TO Osysharp.Organizations (D-ORGSPLIT1): the base kit holds who belongs to which organisation, their roles
+//   there and the mail domains; this one adds what a vendor keeps about its CUSTOMERS. An app derives its customers from
+//   `CustomerAccount` (itself an `Organization`), and keeps its own teams plain `Organization`s:
+//
+//       use Osysharp.Organizations@0;
+//       use Osysharp.Organizations.Accounts@0;
+//       entity Company : CustomerAccount { … }
+//
+// ⚑ THE SAME ONE QUESTION AS THE BASE: `policy ManagesOrganizations` — who sets a tier, an entitlement, an account team
+//   and who is a VIP. Never an organisation's own people, whatever the app lets them edit.
+package Osysharp.Organizations.Accounts {
+  version     "0.2.0";
+  minPlatform "0.9.0";
+  summary     "the service each customer organisation gets — its tier, its entitlements (by tier or its own contract, for a period), its account team (owner, pod, backup) and its VIP people — set by the app's organisation managers alone, and carried for support and sales kits to route and promise by; with a settings page for the tiers.";
+  model "model/**/*.osy";
+  use Osysharp.Identity@0;
+  use Osysharp.Organizations@0;
+  // The settings area's contract and frame — its tiers page (D-SETTINGSREG1).
+  use Osysharp.Ui;
+  tests "tests";
+}

@@ -1,0 +1,87 @@
+// The Accounts add-on's part of the app's settings area (D-SETTINGSREG1): the levels of service an organisation can be
+// on — configuration the app's organisation managers keep, like a helpdesk's statuses. ANNOUNCED (`ISettingsProvider`),
+// so `SettingsArea()` lists it with no wiring, and served at `/settings/tiers` in the area's frame (`SettingsFrame`).
+//
+// ⚑ AN APP TAKES THE PAGE OVER BY NAME — a component `TierSettings` of its own replaces the kit's.
+
+namespace Osysharp.Organizations.Accounts;
+
+using Osysharp.Ui;
+using Osysharp.Organizations;
+
+/// The Accounts add-on's settings sections, shown to the app's organisation managers.
+public class AccountSettingsSections : ISettingsProvider {
+  public SettingsLink[] Sections() {
+    return [
+      new SettingsLink { Label = "Tiers", To = "/settings/tiers", Group = "Organizations", Icon = Icons.Building, Order = 30,
+                         Shown = ManagesOrganizations, Hint = "The levels of service an organisation can be on, and what each includes." },
+    ];
+  }
+}
+
+/// TIERS — each level of service: its name, its rank, what it is, and what everybody on it is entitled to. Nothing is
+/// saved until Save.
+[Composable]
+public component TierEditor(string description = "The levels of service an organisation can be on. An organisation's tier is what it is entitled to, and what a support or sales kit promises it by; its own contract can add more.") {
+  live var tiers = OrganizationTier.OrderBy(t => t.Rank).ToList();
+  // ⚠ UNFILTERED on purpose: a row added on the page joins only a list of EVERY row of its type until it is saved
+  //   (D-GHOSTFILTER1 — the browser never evaluates a server filter), so "a tier's own, not a contract's" is asked
+  //   below, in memory, where the new row is seen at once.
+  live var entitlements = Entitlement.Include(e => e.Tier).OrderBy(e => e.Name).ToList();
+
+  action AddTier() { UnitOfWork.Mark("Add a tier"); new OrganizationTier { Name = "New tier", Rank = tiers.Count + 1 }; }
+
+  render {
+    SettingsPage("Tiers", description: description) {
+      if (tiers.Count == 0) {
+        EmptyState("No tiers yet", body: "Every organisation gets the same service until there are tiers to tell them apart.");
+      }
+      foreach (var t in tiers) {
+        TierSection(t, entitlements.Where(x => x.Organization == null && x.Tier != null && x.Tier.Id == t.Id).ToList());
+      }
+      Row { Button("Add a tier", onPress: AddTier, tone: Tone.Ghost, size: Size.Sm); }
+      SaveBar(saved: "Tiers saved.");
+    }
+  }
+}
+
+/// ONE TIER — its name, rank and description, and what it includes, with its own box for the next thing it includes (so
+/// what is typed under one tier is never shown under another).
+[Composable]
+public component TierSection(OrganizationTier t, List<Entitlement> includes) {
+  string adding = "";
+
+  action Entitle() {
+    if (adding.Trim() == "") { return; }
+    UnitOfWork.Mark("Add " + adding.Trim());
+    new Entitlement { Tier = t, Name = adding.Trim() };
+    adding = "";
+  }
+  action Unentitle(Entitlement e) { UnitOfWork.Mark("Remove " + e.Name); e.Delete(); }
+
+  render {
+    SettingsSection(t.Name, description: t.IsDefault ? "Where an organisation without a tier is." : "") {
+      Row(gap: 3, align: Align.End, wrap: Wrapping.Wrap) {
+        Stack(grow: 1, minW: "180px") { Field("Name", value: t.Name); }
+        Stack(w: "120px") { NumberField("Rank", value: t.Rank, min: 0, hint: "Higher is more."); }
+      }
+      Field("What it is", value: t.Description);
+      Switch("Where an organisation without a tier is", value: t.IsDefault);
+      Text("Includes", fontWeight: FontWeight.Medium, pt: 1);
+      if (includes.Count == 0) { Text("Nothing beyond what every organisation gets.", fontSize: FontSize.Caption, color: Colors.TextMuted); }
+      foreach (var e in includes) {
+        Row(gap: 2, align: Align.Center, label: e.Name) {
+          Text(e.Name, grow: 1);
+          IconButton("Remove " + e.Name, () => Unentitle(e), tone: Tone.Ghost, size: Size.Sm) { Icon(Icons.Close); }
+        }
+      }
+      Row(gap: 2, align: Align.End) {
+        Stack(grow: 1) { Field("Add to " + t.Name, value: adding, placeholder: "Phone support", onEnter: Entitle); }
+        Button("Add", onPress: Entitle, tone: Tone.Ghost, size: Size.Sm, announceAs: "Add it to " + t.Name);
+      }
+    }
+  }
+}
+
+[Page("/settings/tiers")] [Layout(SettingsFrame)] [Authorize(ManagesOrganizations)] [Render(CSR)] [Title("Tiers")]
+public component TierSettings() { render { TierEditor(); } }

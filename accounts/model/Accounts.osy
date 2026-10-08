@@ -1,0 +1,192 @@
+namespace Osysharp.Organizations.Accounts;
+
+using Osysharp.Identity;
+using Osysharp.Organizations;
+
+// ── the organisations an app serves ─────────────────────────────────────────────────────────────────────────────────
+// What a business app needs to know about the service an organisation gets — so a support, sales or success kit can
+// route, prioritise and promise by it. This kit CARRIES it; it decides nothing with it (routing by account, an SLA chosen
+// by tier, cover while the owner is away are the Inbox's).
+
+/// An organisation the app SERVES — a customer company, a client, a tenant — with the level of service it is on. The BASE
+/// an app derives its customers from (`Company : CustomerAccount`); a team of the app's own people stays a plain
+/// `Organization`, because it is served by nobody.
+///
+/// ⚑ THE APP STATES WHAT ITS CUSTOMERS' OWN PEOPLE MAY DO, so it is `Extensible`, like the `Organization` it derives from:
+///   this block grants what is true in every app — the organisation managers do everything, its people see it — and an
+///   app's own subtype states its own grants (they are never inherited). The floor below holds whatever they grant.
+[Authority(Extensible)]
+public entity CustomerAccount : Organization {
+  /// The level of service it is on — what its entitlements default to, and what a support kit chooses a promise by.
+  /// None: the app's default (`DefaultTier()`).
+  OrganizationTier? Tier;
+
+  security {
+    allow read when ManagesOrganizations || IsAuthenticator;
+    allow read when IsOrganizationMember where Membership.Any(m => m.Organization.Id == Id && m.Member == user);
+    allow create, update when ManagesOrganizations;
+    // SECURITY-INVARIANT(organizations-service-is-the-apps-to-assign): the level of service an organisation is on is the
+    // app's organisation managers' to set — never its own people's, whatever the app lets them edit about it.
+    // Guarded by tests/service.test.osy.
+    deny update Tier when !ManagesOrganizations;
+  }
+}
+
+/// A level of service — Standard, Premium, Enterprise — as the app names them. Rows the app's organisation managers
+/// define (it is configuration, like a helpdesk's statuses), ordered by `Rank`.
+public entity OrganizationTier {
+  [Required("Name the tier."), Unique("There is already a tier of that name."), MaxLength(80)] string Name;
+  /// Higher is more: a support kit may treat a higher rank as more urgent.
+  int Rank = 0;
+  [MaxLength(300)] string Description = "";
+  /// The tier a new organisation is on when it names none.
+  bool IsDefault = false;
+  security {
+    allow read when IsAuthenticated || IsAuthenticator;
+    allow create, update, delete when ManagesOrganizations;
+  }
+}
+
+/// What an organisation is entitled to — a channel, support hours, a response target, a named product — the BASE an app
+/// derives its own kind from (`SupportEntitlement : Entitlement { Channel Channel; TimeSpan FirstReplyWithin; }`), or
+/// uses as-is with a name. Attached to a TIER (everybody on it) or to one ORGANISATION (its own contract), for a period.
+///
+/// ⚑ THE APP STATES WHAT IT CARRIES, so it is `Extensible`: this block grants what is true in every app — the managers do
+///   everything, an organisation's people read what applies to them — and an app's own subtype states its own grants.
+[Authority(Extensible)]
+public entity Entitlement {
+  /// Everybody on this tier has it…
+  OrganizationTier? Tier;
+  /// …or this one organisation does (its contract — read before its tier's).
+  CustomerAccount? Organization;
+  [MaxLength(200)] string Name = "";
+  DateTime? ValidFrom;
+  DateTime? ValidUntil;
+  security {
+    allow read when ManagesOrganizations || IsAuthenticator;
+    allow read when IsOrganizationMember where
+      (Organization != null && Membership.Any(m => m.Organization == Organization && m.Member == user && m.IsActive))
+      || (Tier != null && CustomerAccount.Any(a => a.Tier == Tier && Membership.Any(m => m.Organization.Id == a.Id && m.Member == user && m.IsActive)));
+    allow create, update, delete when ManagesOrganizations;
+  }
+}
+
+// ⚠ Appended, never inserted: an enum is stored by position.
+/// A person's part in an organisation's account team.
+public enum AccountTeamRole {
+  /// The one person the organisation's work goes to first — its account manager, its named engineer.
+  [Label("Owner")] Owner,
+  /// One of the people who share the account (a pod).
+  [Label("Team")] Member,
+  /// Who covers when the owner is away.
+  [Label("Backup")] Backup,
+}
+
+/// One of the APP's people looking after an organisation — its owner, a pod member, its backup. The app's own accounts,
+/// not the organisation's people.
+[Unique(Organization, Member, "They are already on the account team.")]
+public entity AccountTeamMember {
+  [Required] CustomerAccount Organization;
+  [Required] Principal Member;
+  AccountTeamRole Role = AccountTeamRole.Member;
+  security {
+    // The managers see every team; the person on one sees it; the organisation's own people see who looks after them.
+    allow read when ManagesOrganizations;
+    allow read when IsAuthenticator;
+    allow read when ManagesOrganizations || IsAuthenticator || IsAuthenticated
+      where Member == user
+         || Membership.Any(m => m.Organization == Organization && m.Member == user && m.IsActive);
+    allow create, update, delete when ManagesOrganizations;
+  }
+}
+
+/// A person whose work the app treats as more important where they work — an executive, a key contact. One per
+/// membership: the person is a VIP AT that organisation, and stops being one when they leave it.
+///
+/// SECURITY-INVARIANT(organizations-service-is-the-apps-to-assign): who is a VIP is the app's say — never the person's,
+/// nor their organisation's own admin's, whatever the app grants on memberships. Guarded by tests/service.test.osy.
+[Unique(Membership, "They are already a VIP there.")]
+public entity VipMembership {
+  [Required] Membership Membership;
+  security {
+    // The managers and the sign-in flow see every one; a person sees that they are one.
+    allow read when ManagesOrganizations;
+    allow read when IsAuthenticator;
+    allow read when ManagesOrganizations || IsAuthenticator || IsAuthenticated where Membership.Member == user;
+    allow create, delete when ManagesOrganizations;
+    deny create, delete when !ManagesOrganizations;
+    deny update Membership;
+  }
+}
+
+// ── what an app calls ───────────────────────────────────────────────────────────────────────────────────────────────
+
+/// What `org` is entitled to now — its own (its contract) first, then its tier's.
+[SuppressWarning("cost-unbounded-read")]   // one organisation's entitlements and its tier's
+public List<Entitlement> EntitlementsOf(CustomerAccount org) {
+  var now = DateTime.UtcNow;
+  var own = Entitlement.Where(e => e.Organization == org && (e.ValidFrom == null || e.ValidFrom <= now)
+    && (e.ValidUntil == null || e.ValidUntil > now)).OrderBy(e => e.Name).ToList();
+  if (org.Tier == null) { return own; }
+  var tier = org.Tier!;
+  var byTier = Entitlement.Where(e => e.Tier == tier && e.Organization == null && (e.ValidFrom == null || e.ValidFrom <= now)
+    && (e.ValidUntil == null || e.ValidUntil > now)).OrderBy(e => e.Name).ToList();
+  foreach (var e in byTier) { own.Add(e); }
+  return own;
+}
+
+/// The tier a new organisation is on when it names none, or null.
+public OrganizationTier? DefaultTier() { return OrganizationTier.FirstOrDefault(t => t.IsDefault); }
+
+/// The tier `org` is on — its own, else the default; null when there are no tiers.
+public OrganizationTier? TierOfAccount(CustomerAccount? org) {
+  if (org != null && org.Tier != null) { return org.Tier; }
+  return DefaultTier();
+}
+
+/// Who owns `org`'s account — the first person its work goes to — or null.
+public Principal? AccountOwnerOf(CustomerAccount org) {
+  var owner = AccountTeamMember.FirstOrDefault(m => m.Organization == org && m.Role == AccountTeamRole.Owner);
+  return owner == null ? null : owner.Member;
+}
+
+/// `org`'s account team, owner first, then backups, then the rest.
+[SuppressWarning("cost-unbounded-read")]   // one organisation's account team
+public List<AccountTeamMember> AccountTeamOf(CustomerAccount org) {
+  return AccountTeamMember.Where(m => m.Organization == org).Include(m => m.Member).OrderBy(m => m.Role).ToList();
+}
+
+/// Make `person` the owner of `org`'s account; a previous owner stays on the team.
+[SuppressWarning("cost-unbounded-read")]   // one organisation's owners — one, as this keeps it
+public AccountTeamMember SetAccountOwner(CustomerAccount org, Principal person) {
+  foreach (var o in AccountTeamMember.Where(m => m.Organization == org && m.Role == AccountTeamRole.Owner && m.Member != person).ToList()) {
+    o.Role = AccountTeamRole.Member;
+  }
+  return AddToAccountTeam(org, person, AccountTeamRole.Owner);
+}
+
+/// Put `person` on `org`'s account team as `role` (or change their part on it).
+public AccountTeamMember AddToAccountTeam(CustomerAccount org, Principal person, AccountTeamRole role = AccountTeamRole.Member) {
+  var existing = AccountTeamMember.FirstOrDefault(m => m.Organization == org && m.Member == person);
+  if (existing != null) { existing.Role = role; return existing; }
+  return new AccountTeamMember { Organization = org, Member = person, Role = role };
+}
+
+/// Make `person` a VIP at `org`, making them a member first when they are not. Already one: unchanged.
+public VipMembership MarkVip(CustomerAccount org, Principal person) {
+  var m = Join(org, person);
+  var held = VipMembership.FirstOrDefault(v => v.Membership == m);
+  if (held != null) { return held; }
+  return new VipMembership { Membership = m };
+}
+
+/// `person` is no longer a VIP at `org`; they stay a member.
+[SuppressWarning("cost-unbounded-read")]   // one person's VIP marks at one organisation
+public void UnmarkVip(CustomerAccount org, Principal person) {
+  foreach (var v in VipMembership.Where(v => v.Membership.Organization == org && v.Membership.Member == person).ToList()) { v.Delete(); }
+}
+
+/// Is `person` a VIP in any organisation they are an active member of?
+public bool IsVipPerson(Principal person) {
+  return VipMembership.Any(v => v.Membership.Member == person && v.Membership.IsActive);
+}

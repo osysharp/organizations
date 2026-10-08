@@ -1,0 +1,10 @@
+// The producer's test project for Osysharp.Organizations.Accounts — a supplier's portal: the customer companies it
+// serves, each on a tier with what that tier includes and a contract of its own, an account team looking after each, and
+// a VIP buyer — set by the supplier's staff, never by a company's own people.
+app AccountsKitTests {
+  model "model/**/*.osy";
+  tests "**/*.test.osy";
+  use Osysharp.Identity@0;
+  use Osysharp.Organizations@0;
+  use Osysharp.Organizations.Accounts@0;
+}
