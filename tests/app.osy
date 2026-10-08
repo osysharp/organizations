@@ -1,0 +1,8 @@
+// The producer's test project for Osysharp.Organizations — a supplier's portal: customer companies with their own people,
+// the supplier's own teams, a buyer role held within one company, and a company that takes its people by mail domain.
+app OrganizationsKitTests {
+  model "model/**/*.osy";
+  tests "**/*.test.osy";
+  use Osysharp.Identity@0;
+  use Osysharp.Organizations@0;
+}

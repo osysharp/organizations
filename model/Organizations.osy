@@ -1,0 +1,289 @@
+namespace Osysharp.Organizations;
+
+using Osysharp.Identity;
+
+// ── who looks after them — the app's to say ──────────────────────────────────────────────────────────────────────────
+
+/// Who creates organisations, says which mail domain belongs to which, and adds and removes their people. Only the app
+/// knows, so the app DEFINES it (a missing definition is a compile error naming it):
+///   `policy ManagesOrganizations => RoleGrant.Any(g => g.Member == user && g.Role == AppRole.Admin);`
+/// An organisation's OWN people may be given more by the app — an Acme admin adding Acme's people — through ordinary
+/// grants on the kit's types (`partial entity Membership { security { allow create where HoldsRoleIn(…) } }`).
+policy ManagesOrganizations;
+
+/// WHO a member's grants are for: somebody who belongs to an organisation at all — a fact about the caller, so the
+/// member rules below are never asked for an app's staff who belong to none. It holds for every caller those rules'
+/// `where` admits (each is a membership of the caller's own).
+policy IsOrganizationMember => Membership.Any(m => m.Member == user);
+
+// ── enums ⚠ appended, never inserted: an enum is stored by position ───────────────────────────────────────────────
+
+/// How a person came to be in an organisation — kept on the membership, so whoever keeps memberships in step (an
+/// identity provider's sign-in, a SCIM feed) only ever changes the ones it made.
+public enum MembershipSource {
+  /// Added in the app, by a person.
+  [Label("Added here")] Local,
+  /// Joined because their PROVEN address is on one of the organisation's mail domains.
+  [Label("Mail domain")] Domain,
+  /// Accepted an invitation into it.
+  [Label("Invitation")] Invitation,
+  /// Made by the organisation's identity provider at a single sign-on.
+  [Label("Single sign-on")] Idp,
+  /// Provisioned by the organisation's directory over SCIM.
+  [Label("Directory (SCIM)")] Scim,
+}
+
+// ── organisations ───────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// A group people belong to — a customer company, a team of the app's own people, a department. The BASE an app derives
+/// from (`Company : Organization { Plan Plan; }`, `Team : Organization`) or uses as-is.
+///
+/// ⚑ A PLACE FOR WHAT AN ORGANISATION DECIDES, LATER. `Parent` makes a group of companies, or a department of teams, and
+///   it is where an organisation-wide policy will be inherited from (a policy row pointing at an organisation, read up its
+///   chain) — so nothing about a policy needs a column here.
+///
+/// ⚑ THE APP STATES WHAT AN ORGANISATION'S OWN PEOPLE MAY DO, so it is `Extensible`: this block grants what is true in
+///   every app — the app's organisation managers do everything, members see the organisations they are in — and the
+///   app adds the rest. An app's own subtype states its own grants (they are never inherited).
+[Authority(Extensible)]
+public entity Organization {
+  [Required("Give the organisation a name."), MaxLength(200)] string Name;
+  /// The organisation this one is part of — a company in a group, a team in a department. None for a top-level one.
+  Organization? Parent;
+  /// An organisation that is not active is kept, with its people and its history; it takes no new members.
+  bool IsActive = true;
+  /// The identity provider's or directory's own id for it (a SCIM group's id), for one it provides.
+  [MaxLength(255)] string? ExternalId;
+  IdentitySource Source = IdentitySource.Local;
+
+  security {
+    allow read when ManagesOrganizations || IsAuthenticator;
+    // Its own people see it — their company's name, their team.
+    allow read when IsOrganizationMember where Membership.Any(m => m.Organization.Id == Id && m.Member == user);
+    allow create, update when ManagesOrganizations;
+  }
+}
+
+/// A mail domain an organisation's people write from — `acme.com`. A person whose address on it is PROVEN joins the
+/// organisation when they next sign in (`JoinByDomain`), holding `JoinRole` there when it is set.
+///
+/// SECURITY-INVARIANT(organizations-a-domain-is-the-apps-to-assign): which domain belongs to which organisation is said by
+/// the app's organisation managers alone — never by an organisation's own people, whatever the app grants them (this
+/// entity is not `Extensible`) — so nobody can claim `gmail.com`, or a rival's domain, and collect its people. One domain
+/// belongs to one organisation, and a public mail service's domain is refused (`AddDomain`). Guarded by
+/// tests/domains.test.osy.
+public entity OrganizationDomain {
+  [Required] Organization Organization;
+  /// The domain, lower-case, without the `@` — `acme.com`.
+  [Required, Unique("Another organisation already has that domain."), MaxLength(253)] string Domain;
+  /// Whether a person whose proven address is on it joins on their own. Off: the domain only says where a newcomer
+  /// probably belongs (a suggestion to a person who looks after it).
+  bool JoinsAutomatically = true;
+  /// The role a person who joins by the domain holds in the organisation. None: a member, no more.
+  role? JoinRole;
+
+  security {
+    allow read when ManagesOrganizations || IsAuthenticator;
+    allow create, update, delete when ManagesOrganizations;
+  }
+}
+
+// ── memberships ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// A person's place in an organisation. One per person and organisation.
+///
+/// ⚑ READY FOR AN IDENTITY PROVIDER. `Source` says what made it and `ExternalId` holds the provider's own id for it, so a
+///   single sign-on or a SCIM feed adds, suspends (`IsActive`) and removes ONLY the memberships it made, and leaves the
+///   ones a person made here alone.
+[Unique(Organization, Member, "That person is already in the organisation.")]
+[Authority(Extensible)]
+public entity Membership {
+  [Required] Organization Organization;
+  [Required] Principal Member;
+  MembershipSource Source = MembershipSource.Local;
+  /// The identity provider's or directory's own id for this membership.
+  [MaxLength(255)] string? ExternalId;
+  /// A suspended membership (a directory said `active: false`) is kept but holds nothing: no policy of the kit reads it.
+  bool IsActive = true;
+  DateTime JoinedAt = DateTime.UtcNow;
+
+  security {
+    allow read when ManagesOrganizations || IsAuthenticator;
+    // A person sees their own memberships, and who else is in an organisation they are in.
+    allow read when IsOrganizationMember
+      where Member == user
+         || Membership.Any(m => m.Organization == Organization && m.Member == user);
+    allow create, update, delete when ManagesOrganizations;
+    // The sign-in flow places a person by their proven address (`JoinByDomain`), and makes no other membership.
+    allow create when IsAuthenticator where Source == MembershipSource.Domain;
+    // SECURITY-INVARIANT(organizations-domain-joins-only-a-proven-address): a membership made by a mail domain is made
+    // only for a person whose address was PROVEN — a message sent to it was received and acted on. An address typed at
+    // sign-up proves nothing, so without this anybody could sign up as `x@acme.com` and be in Acme, reading what Acme's
+    // people read. A floor: no grant an app writes can make one for an unproven address. Guarded by
+    // tests/domains.test.osy.
+    deny create where Source == MembershipSource.Domain && Member.EmailVerifiedAt == null;
+    // A membership is one person in one organisation; it is never re-pointed at another of either.
+    deny update Member;
+    deny update Organization;
+  }
+}
+
+/// A role a person holds WITHIN one organisation — a member of the app's own `[Role]` enum (`role`), held there and
+/// nowhere else. Ask with `HoldsRoleIn(org, AppRole.X)`.
+///
+/// SECURITY-INVARIANT(organizations-a-role-held-in-one-place): an organisation role is a row of its own table, never a
+/// `RoleGrant` — so a policy over the app's roles (`RoleGrant.Any(…)`) can never read a role somebody holds at Acme as
+/// one they hold everywhere; nobody grants themself one (an organisation's own admin included); and `Authenticator`, the
+/// sign-in flow's role, is never one. Floors: no grant an app writes loosens them. Guarded by tests/roles.test.osy.
+[Unique(Membership, Role, "They already hold that role there.")]
+[Authority(Extensible)]
+public entity MembershipRole {
+  [Required] Membership Membership;
+  [Required] role Role;
+
+  security {
+    allow read when ManagesOrganizations || IsAuthenticator;
+    // Each person sees the roles they hold — a page asks before it offers something.
+    allow read when IsAuthenticated where Membership.Member == user;
+    allow create, delete when ManagesOrganizations;
+    // The sign-in flow gives a person who joins by a domain the domain's role (`JoinByDomain`), and nothing else.
+    allow create when IsAuthenticator where Membership.Source == MembershipSource.Domain;
+    deny create when !IsAuthenticator where Membership.Member == user;
+    deny create where Role == role.Authenticator;
+    // A role row is a fact, made or removed — never edited into another role or onto another person.
+    deny update Membership;
+    deny update Role;
+  }
+}
+
+// ── policies an app writes its rules with ───────────────────────────────────────────────────────────────────────────
+
+/// Is the caller an active member of `o`?  `allow read where IsMemberOf(Company)`.
+policy IsMemberOf(Organization o) => Membership.Any(m => m.Organization == o && m.Member == user && m.IsActive);
+
+/// Does the caller hold `r` within `o`?  `allow update where HoldsRoleIn(Company, AppRole.CustomerAdmin)`.
+policy HoldsRoleIn(Organization o, role r) =>
+  MembershipRole.Any(g => g.Membership.Organization == o && g.Membership.Member == user && g.Membership.IsActive && g.Role == r);
+
+// ── what an app calls ───────────────────────────────────────────────────────────────────────────────────────────────
+
+/// The domain of an address, lower-case — "Ada@Acme.COM " → "acme.com"; "" for something that is not an address.
+public string DomainOf(string email) {
+  var e = email.Trim().ToLower();
+  var at = e.LastIndexOf("@");
+  if (at < 1 || at >= e.Length - 1) { return ""; }
+  return e.Substring(at + 1);
+}
+
+/// Is `domain` a public mail service's — one anybody can have an address on? Such a domain says nothing about which
+/// organisation a person is from, so it is never an organisation's.
+public bool IsPublicMailDomain(string domain) {
+  var d = domain.Trim().ToLower();
+  return d == "gmail.com" || d == "googlemail.com" || d == "outlook.com" || d == "hotmail.com" || d == "live.com"
+    || d == "msn.com" || d == "yahoo.com" || d == "ymail.com" || d == "icloud.com" || d == "me.com" || d == "mac.com"
+    || d == "aol.com" || d == "proton.me" || d == "protonmail.com" || d == "gmx.com" || d == "gmx.net" || d == "mail.com"
+    || d == "zoho.com" || d == "yandex.com" || d == "fastmail.com" || d == "hey.com" || d == "qq.com" || d == "163.com";
+}
+
+/// Give `org` the mail domain `domain` ("acme.com", or "@acme.com"); a person who proves an address on it joins `org`,
+/// holding `joinRole` there when it is set. Throws the sentence to show for a public mail service's domain, something
+/// that is not a domain, or a domain another organisation has.
+public OrganizationDomain AddDomain(Organization org, string domain, role? joinRole = null) {
+  var d = domain.Trim().ToLower();
+  if (d.StartsWith("@")) { d = d.Substring(1); }
+  if (d == "" || !d.Contains(".") || d.Contains("@") || d.Contains(" ") || d.StartsWith(".") || d.EndsWith(".")) {
+    throw new ValidationException("That does not look like a mail domain — write it like acme.com.");
+  }
+  if (IsPublicMailDomain(d)) {
+    throw new ValidationException($"{d} is a public mail service — anybody can have an address on it, so it cannot say who works for {org.Name}.");
+  }
+  if (OrganizationDomain.Any(x => x.Domain == d)) {
+    throw new ValidationException($"Another organisation already has {d}.");
+  }
+  return new OrganizationDomain { Organization = org, Domain = d, JoinRole = joinRole };
+}
+
+/// The organisation whose mail domain `email` is on, or null.
+public Organization? OrganizationByDomain(string email) {
+  var d = DomainOf(email);
+  if (d == "") { return null; }
+  var match = OrganizationDomain.FirstOrDefault(x => x.Domain == d);
+  return match == null ? null : match.Organization;
+}
+
+/// Put `person` in `org` (or wake a suspended membership); answers the membership. Already a member: unchanged.
+public Membership Join(Organization org, Principal person, MembershipSource source = MembershipSource.Local) {
+  var existing = Membership.FirstOrDefault(m => m.Organization == org && m.Member == person);
+  if (existing != null) {
+    if (!existing.IsActive) { existing.IsActive = true; }
+    return existing;
+  }
+  return new Membership { Organization = org, Member = person, Source = source, JoinedAt = DateTime.UtcNow };
+}
+
+/// Take `person` out of `org`, with every role they held there.
+[SuppressWarning("cost-unbounded-read")]   // one membership's roles
+public void Leave(Organization org, Principal person) {
+  var m = Membership.FirstOrDefault(x => x.Organization == org && x.Member == person);
+  if (m == null) { return; }
+  foreach (var r in MembershipRole.Where(x => x.Membership == m).ToList()) { r.Delete(); }
+  m.Delete();
+}
+
+/// Give `person` the role `r` within `org`, making them a member first when they are not.
+public MembershipRole GrantIn(Organization org, Principal person, role r) {
+  var m = Join(org, person);
+  var held = MembershipRole.FirstOrDefault(x => x.Membership == m && x.Role == r);
+  if (held != null) { return held; }
+  return new MembershipRole { Membership = m, Role = r };
+}
+
+/// Take the role `r` within `org` from `person`; they stay a member.
+[SuppressWarning("cost-unbounded-read")]   // one person's grants of one role in one organisation
+public void RevokeIn(Organization org, Principal person, role r) {
+  foreach (var g in MembershipRole.Where(x => x.Membership.Organization == org && x.Membership.Member == person && x.Role == r).ToList()) {
+    g.Delete();
+  }
+}
+
+/// Does `person` hold `r` within `org`? The question a function asks about somebody else — rules ask `HoldsRoleIn`.
+public bool HoldsIn(Principal person, Organization org, role r) {
+  return MembershipRole.Any(g => g.Membership.Organization == org && g.Membership.Member == person && g.Membership.IsActive && g.Role == r);
+}
+
+/// The organisations `person` is an active member of, by name.
+[SuppressWarning("cost-unbounded-read")]   // the organisations one person belongs to
+public List<Organization> OrganizationsOf(Principal person) {
+  return Membership.Where(m => m.Member == person && m.IsActive).Select(m => m.Organization).OrderBy(o => o.Name).ToList();
+}
+
+/// Put `person` in the organisation whose domain their address is on — when that address is PROVEN, the domain lets
+/// people join on their own, and the organisation is active — holding the domain's `JoinRole` there. Answers the
+/// membership, or null when nothing applied. Meant to run as the sign-in flow, from the app's `AccountEvents.SignedIn`:
+///
+///     public class DeskSignIns : AccountEvents {
+///       public override void SignedIn(User account, DateTime at) { JoinByDomain(account); }
+///     }
+///
+/// An address that is not proven joins nothing — its owner joins when they prove it and sign in again.
+/// (SECURITY-INVARIANT(organizations-domain-joins-only-a-proven-address), held by `Membership`'s floor as well.)
+public Membership? JoinByDomain(Principal person) {
+  if (person.EmailVerifiedAt == null) { return null; }
+  var d = DomainOf(person.Email);
+  if (d == "") { return null; }
+  var domain = OrganizationDomain.FirstOrDefault(x => x.Domain == d);
+  if (domain == null || !domain.JoinsAutomatically) { return null; }
+  if (domain.Organization == null) {
+    // ⚠ The domain names an organisation the sign-in flow cannot read — an app's subtype (`Company : Organization`)
+    //   states its own grants, and a grant on the base does not reach it. Said, rather than joining nobody silently.
+    Log.Warning("JoinByDomain: {Domain} belongs to an organisation the sign-in flow cannot read — add `allow read when IsAuthenticator;` to its type", d);
+    return null;
+  }
+  if (!domain.Organization.IsActive) { return null; }
+  var org = domain.Organization;
+  var existing = Membership.FirstOrDefault(m => m.Organization == org && m.Member == person);
+  if (existing != null) { return existing; }
+  var made = new Membership { Organization = org, Member = person, Source = MembershipSource.Domain, JoinedAt = DateTime.UtcNow };
+  if (domain.JoinRole != null) { new MembershipRole { Membership = made, Role = domain.JoinRole.Value }; }
+  return made;
+}

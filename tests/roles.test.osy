@@ -1,0 +1,134 @@
+// A role held in one organisation is held there and nowhere else, and nobody hands themself one.
+// SECURITY-INVARIANT(organizations-a-role-held-in-one-place).
+
+using Osysharp.Identity;
+using Osysharp.Organizations;
+using OrganizationsKitTests;
+
+[TestFixture]
+void Companies() {
+  var sam = new Person { Email = "sam@supplier.test", DisplayName = "Sam", CodeHash = Security.HashPassword("1111") };
+  new RoleGrant { Member = sam, Role = PortalRole.Staff };
+  var acme = new Company { Name = "Acme" };
+  var globex = new Company { Name = "Globex" };
+  var bea = new Person { Email = "bea@acme.com", DisplayName = "Bea", CodeHash = Security.HashPassword("4444") };
+  var ada = new Person { Email = "ada@acme.com", DisplayName = "Ada", CodeHash = Security.HashPassword("2222") };
+  var gil = new Person { Email = "gil@globex.com", DisplayName = "Gil", CodeHash = Security.HashPassword("5555") };
+  var mb = new Membership { Organization = acme, Member = bea };
+  new MembershipRole { Membership = mb, Role = PortalRole.Buyer };
+  new Membership { Organization = acme, Member = ada };
+  new Membership { Organization = globex, Member = gil };
+  new PurchaseOrder { Company = globex, Reference = "G-100" };
+}
+
+principal Sam => Person.Single(p => p.Email == "sam@supplier.test");
+principal Bea => Person.Single(p => p.Email == "bea@acme.com");
+principal Ada => Person.Single(p => p.Email == "ada@acme.com");
+principal Gil => Person.Single(p => p.Email == "gil@globex.com");
+
+[Test(Companies)]
+void a_buyer_at_acme_buys_for_acme_and_for_nobody_else() {
+  runas (Bea) {
+    var acme = Company.Single(c => c.Name == "Acme");
+    new PurchaseOrder { Company = acme, Reference = "A-100" };
+    UnitOfWork.Commit();
+    // Globex is not hers to read, let alone to buy for.
+    Assert.False(Company.Any(c => c.Name == "Globex"));
+  }
+  Company? globex = null;
+  runas (Sam) { globex = Company.Single(c => c.Name == "Globex"); }
+  runas (Bea) { Assert.Denied(() => new PurchaseOrder { Company = globex!, Reference = "G-200" }); }
+}
+
+[Test(Companies)]
+void a_role_held_at_a_company_is_not_a_role_held_in_the_app() {
+  runas (Bea) {
+    Assert.True(MembershipRole.Any(r => r.Membership.Member == Bea && r.Role == PortalRole.Buyer));
+    Assert.False(RoleGrant.Any(g => g.Member == Bea && g.Role == PortalRole.Buyer));
+  }
+  runas (Sam) {
+    Assert.True(HoldsIn(Bea, Company.Single(c => c.Name == "Acme"), PortalRole.Buyer));
+    Assert.False(HoldsIn(Bea, Company.Single(c => c.Name == "Globex"), PortalRole.Buyer));
+  }
+}
+
+[Test(Companies)]
+void a_member_sees_their_company_and_its_people_and_nothing_of_another() {
+  runas (Ada) {
+    Assert.Equal(1, Company.Count());
+    Assert.Equal("Acme", Company.Single().Name);
+    Assert.Equal(2, Membership.Count());
+    Assert.False(Membership.Any(m => m.Member.Email == "gil@globex.com"));
+    Assert.False(PurchaseOrder.Any());
+  }
+  runas (Gil) { Assert.Equal(1, PurchaseOrder.Count()); }
+}
+
+[Test(Companies)]
+void a_buyer_may_give_a_colleague_a_role_but_never_themself() {
+  runas (Bea) {
+    var acme = Company.Single(c => c.Name == "Acme");
+    var ada = Person.Single(p => p.Email == "ada@acme.com");
+    GrantIn(acme, ada, PortalRole.Viewer);
+    UnitOfWork.Commit();
+    Assert.Denied(() => GrantIn(acme, Bea, PortalRole.Viewer));
+  }
+  // Not even the app's own staff hand themselves a role somewhere.
+  runas (Sam) {
+    var acme = Company.Single(c => c.Name == "Acme");
+    Assert.Denied(() => GrantIn(acme, Sam, PortalRole.Buyer));
+  }
+}
+
+[Test(Companies)]
+void the_sign_in_flows_role_is_never_an_organisation_role() {
+  runas (Sam) {
+    var acme = Company.Single(c => c.Name == "Acme");
+    var ada = Person.Single(p => p.Email == "ada@acme.com");
+    Assert.Denied(() => GrantIn(acme, ada, PortalRole.Authenticator));
+  }
+}
+
+[Test(Companies)]
+void a_role_row_is_never_edited_into_another() {
+  runas (Sam) {
+    var held = MembershipRole.Single(r => r.Membership.Member == Bea);
+    Assert.Denied(() => { held.Role = PortalRole.Staff; });
+  }
+}
+
+[Test(Companies)]
+void a_suspended_membership_holds_nothing() {
+  Company? acme = null;
+  runas (Sam) { Membership.Single(m => m.Member == Bea).IsActive = false; acme = Company.Single(c => c.Name == "Acme"); }
+  runas (Bea) {
+    // A suspended member no longer sees the company, and cannot buy for it.
+    Assert.False(Company.Any());
+    Assert.Denied(() => new PurchaseOrder { Company = acme!, Reference = "A-200" });
+  }
+}
+
+[Test(Companies)]
+void joining_twice_is_one_membership_and_leaving_takes_the_roles() {
+  runas (Sam) {
+    var acme = Company.Single(c => c.Name == "Acme");
+    var bea = Person.Single(p => p.Email == "bea@acme.com");
+    Join(acme, bea);
+    UnitOfWork.Commit();
+    Assert.Equal(1, Membership.Count(m => m.Member == bea));
+    Leave(acme, bea);
+    UnitOfWork.Commit();
+    Assert.False(Membership.Any(m => m.Member == bea));
+    Assert.False(MembershipRole.Any(r => r.Membership.Member == bea));
+    Assert.Equal(0, OrganizationsOf(bea).Count);
+  }
+}
+
+[Test(Companies)]
+void a_membership_is_never_moved_to_another_company_or_person() {
+  runas (Sam) {
+    var m = Membership.Single(x => x.Member == Bea);
+    var globex = Company.Single(c => c.Name == "Globex");
+    Assert.Denied(() => { m.Organization = globex; });
+  }
+}

@@ -1,0 +1,114 @@
+// A newcomer lands in their company by the domain of a PROVEN address — and by nothing less.
+// SECURITY-INVARIANT(organizations-domain-joins-only-a-proven-address), SECURITY-INVARIANT(organizations-a-domain-is-the-apps-to-assign).
+
+using Osysharp.Identity;
+using Osysharp.Organizations;
+using OrganizationsKitTests;
+
+[TestFixture]
+void Portal() {
+  var sam = new Person { Email = "sam@supplier.test", DisplayName = "Sam", CodeHash = Security.HashPassword("1111"),
+                         EmailVerifiedAt = DateTime.UtcNow };
+  new RoleGrant { Member = sam, Role = PortalRole.Staff };
+  var acme = new Company { Name = "Acme", AccountNumber = "A-1" };
+  new OrganizationDomain { Organization = acme, Domain = "acme.com", JoinRole = PortalRole.Viewer };
+  new Company { Name = "Globex", AccountNumber = "G-1" };
+  // Ada proved her address; Tom only typed his.
+  new Person { Email = "ada@acme.com", DisplayName = "Ada", CodeHash = Security.HashPassword("2222"), EmailVerifiedAt = DateTime.UtcNow };
+  new Person { Email = "tom@acme.com", DisplayName = "Tom", CodeHash = Security.HashPassword("3333") };
+  var bea = new Person { Email = "bea@acme.com", DisplayName = "Bea", CodeHash = Security.HashPassword("4444"), EmailVerifiedAt = DateTime.UtcNow };
+  var m = new Membership { Organization = acme, Member = bea };
+  new MembershipRole { Membership = m, Role = PortalRole.Buyer };
+}
+
+principal Sam => Person.Single(p => p.Email == "sam@supplier.test");
+principal Ada => Person.Single(p => p.Email == "ada@acme.com");
+principal Tom => Person.Single(p => p.Email == "tom@acme.com");
+principal Bea => Person.Single(p => p.Email == "bea@acme.com");
+
+[Test(Portal)]
+void a_proven_address_on_the_domain_joins_the_company_at_sign_in_with_the_domains_role() {
+  string ticket = "";
+  runas (AuthBootstrap) { ticket = SignInWithCode("ada@acme.com", "2222"); }
+  Assert.NotEqual("", ticket);
+  runas (Ada) {
+    var mine = Membership.Single(m => m.Member == Ada);
+    Assert.Equal("Acme", mine.Organization.Name);
+    Assert.Equal(MembershipSource.Domain, mine.Source);
+    Assert.True(MembershipRole.Any(r => r.Membership == mine && r.Role == PortalRole.Viewer));
+  }
+}
+
+[Test(Portal)]
+void a_wrong_code_and_an_unknown_address_sign_nobody_in_and_join_nothing() {
+  string wrong = "x";
+  string unknown = "x";
+  runas (AuthBootstrap) { wrong = SignInWithCode("ada@acme.com", "9999"); unknown = SignInWithCode("nobody@acme.com", "2222"); }
+  Assert.Equal("", wrong);
+  Assert.Equal("", unknown);
+  runas (Ada) { Assert.False(Membership.Any(m => m.Member == Ada)); }
+}
+
+[Test(Portal)]
+void an_address_nobody_proved_joins_nothing() {
+  string ticket = "";
+  runas (AuthBootstrap) { ticket = SignInWithCode("tom@acme.com", "3333"); }
+  Assert.NotEqual("", ticket);
+  runas (Tom) { Assert.False(Membership.Any(m => m.Member == Tom)); }
+  // …and he joins once he has proved it, at his next sign-in.
+  runas (AuthBootstrap) { Person.Single(p => p.Email == "tom@acme.com").EmailVerifiedAt = DateTime.UtcNow; }
+  runas (AuthBootstrap) { SignInWithCode("tom@acme.com", "3333"); }
+  runas (Tom) { Assert.True(Membership.Any(m => m.Member == Tom && m.Organization.Name == "Acme")); }
+}
+
+[Test(Portal)]
+void no_grant_makes_a_domain_membership_for_an_unproven_address() {
+  // Staff may add anybody to any company — but not claim the domain did it for an address nobody proved.
+  runas (Sam) {
+    var acme = Company.Single(c => c.Name == "Acme");
+    var tom = Person.Single(p => p.Email == "tom@acme.com");
+    Assert.Denied(() => new Membership { Organization = acme, Member = tom, Source = MembershipSource.Domain });
+  }
+  runas (AuthBootstrap) {
+    var acme = Company.Single(c => c.Name == "Acme");
+    var tom = Person.Single(p => p.Email == "tom@acme.com");
+    Assert.Denied(() => new Membership { Organization = acme, Member = tom, Source = MembershipSource.Domain });
+  }
+}
+
+[Test(Portal)]
+void a_public_mail_service_is_nobodys_domain() {
+  runas (Sam) {
+    var globex = Company.Single(c => c.Name == "Globex");
+    Assert.Throws(() => AddDomain(globex, "gmail.com"));
+    Assert.Throws(() => AddDomain(globex, "@Outlook.com"));
+    Assert.Throws(() => AddDomain(globex, "not a domain"));
+  }
+}
+
+[Test(Portal)]
+void one_domain_belongs_to_one_organisation() {
+  runas (Sam) {
+    var globex = Company.Single(c => c.Name == "Globex");
+    Assert.Throws(() => AddDomain(globex, "ACME.com"));
+    var added = AddDomain(globex, " @Globex.COM ");
+    Assert.Equal("globex.com", added.Domain);
+  }
+}
+
+[Test(Portal)]
+void a_companys_own_people_never_say_which_domain_is_theirs() {
+  // Bea is Acme's buyer, and the app lets buyers add Acme's people — but a domain is the app's to assign.
+  runas (Bea) {
+    var acme = Company.Single(c => c.Name == "Acme");
+    Assert.Denied(() => new OrganizationDomain { Organization = acme, Domain = "acme-group.com" });
+  }
+}
+
+[Test(Portal)]
+void a_domain_that_only_suggests_joins_nobody() {
+  runas (Sam) { OrganizationDomain.Single(d => d.Domain == "acme.com").JoinsAutomatically = false; }
+  runas (AuthBootstrap) { SignInWithCode("ada@acme.com", "2222"); }
+  runas (Ada) { Assert.False(Membership.Any(m => m.Member == Ada)); }
+  runas (Sam) { Assert.Equal("Acme", OrganizationByDomain("someone@ACME.com")!.Name); }
+}
