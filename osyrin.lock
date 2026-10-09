@@ -6,8 +6,8 @@
     {
       "name": "Osysharp.Identity",
       "kind": "package",
-      "version": "0.7.0",
-      "hash": "sha256:a8f780ee024fb27a6c1f909feb86fec10c8a176788acd8546d1380a9243575bd",
+      "version": "0.8.0",
+      "hash": "sha256:7fadb5f2628cfd6895c44d2e88725b39055ea36c3a8276b3b345c72a931f4358",
       "minPlatform": "0.9.0",
       "shadow": "app-forkable",
       "source": "workspace:kits/identity",

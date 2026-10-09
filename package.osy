@@ -17,7 +17,7 @@
 //   people — is the add-on `Osysharp.Organizations.Accounts`, which uses this one (D-ORGSPLIT1). An app that only needs
 //   "these people belong to this organisation" takes this kit alone.
 package Osysharp.Organizations {
-  version     "0.4.0";
+  version     "0.4.1";
   minPlatform "0.9.0";
   summary     "customer companies and internal teams: who belongs to which, roles held within one organisation (the app's own roles, scoped), mail domains that put a newcomer with a PROVEN address in the right company, and membership rows that remember their source and external id so single sign-on and SCIM can keep them in step.";
   model "model/**/*.osy";
