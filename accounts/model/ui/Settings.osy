@@ -83,5 +83,5 @@ public component TierSection(OrganizationTier t, List<Entitlement> includes) {
   }
 }
 
-[Page("/settings/tiers")] [Layout(SettingsFrame)] [Authorize(ManagesOrganizations)] [Render(CSR)] [Title("Tiers")]
+[Route("/settings/tiers")] [Layout(SettingsFrame)] [Authorize(ManagesOrganizations)] [Render(CSR)] [Title("Tiers")]
 public component TierSettings() { render { TierEditor(); } }
