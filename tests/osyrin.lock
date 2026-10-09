@@ -6,8 +6,8 @@
     {
       "name": "Osysharp.Identity",
       "kind": "package",
-      "version": "0.8.0",
-      "hash": "sha256:7fadb5f2628cfd6895c44d2e88725b39055ea36c3a8276b3b345c72a931f4358",
+      "version": "0.8.1",
+      "hash": "sha256:83723f5577bbbb2aea58fbee2360a4e00db5c2cfd35f8532ce7be70be153b6fd",
       "minPlatform": "0.9.0",
       "shadow": "app-forkable",
       "source": "workspace:kits/identity",
@@ -16,8 +16,8 @@
     {
       "name": "Osysharp.Organizations",
       "kind": "package",
-      "version": "0.4.1",
-      "hash": "sha256:bf13e6d48846dc47ef642c97b62128ca6f87a1e513972b932c64cd6634c950e1",
+      "version": "0.4.2",
+      "hash": "sha256:3cc98f3d1592db8de5867a5c074386efdc9993be542937e4a17dd1e673e10846",
       "minPlatform": "0.9.0",
       "shadow": "app-forkable",
       "source": "workspace:kits/organizations",

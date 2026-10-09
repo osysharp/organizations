@@ -76,8 +76,8 @@ public entity OrganizationDomain {
   [Required] Organization Organization;
   /// The domain, lower-case, without the `@` — `acme.com`.
   [Required, Unique("Another organisation already has that domain."), MaxLength(253)] string Domain;
-  /// Whether a person whose proven address is on it joins on their own. Off: the domain only says where a newcomer
-  /// probably belongs (a suggestion to a person who looks after it).
+  /// Whether a person whose proven address is on it joins on their own. Off: the domain only suggests where a newcomer
+  /// belongs (a suggestion to a person who looks after it).
   bool JoinsAutomatically = true;
   /// The role a person who joins by the domain holds in the organisation. None: a member, no more.
   role? JoinRole;
