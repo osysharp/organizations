@@ -157,7 +157,7 @@ void a_right_code_signs_in_and_a_wrong_one_or_an_unknown_address_does_not() {
   Assert.Equal("", SignInWithCode("nobody@supplier.test", "1111"));
 }
 
-// ── the settings area (D-SETTINGSREG1) ──────────────────────────────────────────────────────────────────────────────
+// ── the settings area ───────────────────────────────────────────────────────────────────────────────────────────────
 
 [Test(Service)]
 void the_kit_announces_its_tiers_page_to_the_organisation_managers_and_nobody_else() {
