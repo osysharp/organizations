@@ -1,0 +1,72 @@
+namespace AccountsKitTests;
+
+using Osysharp.Identity;
+using Osysharp.Organizations;
+using Osysharp.Organizations.ServicePlans;
+
+// A supplier's portal. Its own people (staff) look after the companies it serves; a company's people see their own
+// company and what it is entitled to, and a company's BUYER may keep its details up to date — never its tier.
+
+[Role] enum PortalRole { Authenticator, Staff, Buyer, Viewer }
+
+policy IsStaff => RoleGrant.Any(g => g.Member == user && g.Role == PortalRole.Staff);
+/// The base kit's question, answered by the app: staff look after the companies.
+policy ManagesOrganizations => IsStaff;
+
+/// The app's own kind of account — signs in with a code, which is all a test needs.
+entity Person : Principal {
+  [MaxLength(200)] string CodeHash = "";
+  security {
+    allow read when IsAuthenticated || IsAuthenticator;
+    allow create when IsAuthenticator;
+    allow update when IsAuthenticated || IsAuthenticator where Id == user.Id;
+    allow update when IsAuthenticator;
+    deny read CodeHash when !IsAuthenticator;
+  }
+}
+
+/// A customer company — the add-on's `CustomerAccount`, with what the supplier keeps about it.
+entity Company : CustomerAccount {
+  [MaxLength(40)] string AccountNumber = "";
+  security {
+    allow read when IsStaff || IsAuthenticator;
+    allow read when IsOrganizationMember where IsMemberOf(this);
+    allow create, update when IsStaff;
+    // A company's buyer keeps its details up to date — but never its tier (the kit's floor).
+    allow update when IsOrganizationMember where HoldsRoleIn(this, PortalRole.Buyer);
+  }
+}
+
+/// What a company gets from the supplier's support — the kit's entitlement, with the app's own shape.
+entity SupportEntitlement : Entitlement {
+  [MaxLength(40)] string Channel = "Email";
+  TimeSpan FirstReplyWithin = TimeSpan.FromHours(8);
+  security {
+    allow read, create, update when IsStaff;
+    allow read when IsOrganizationMember
+      where (Organization != null && IsMemberOf(Organization))
+         || (Tier != null && Company.Any(c => c.Tier == Tier && IsMemberOf(c)));
+  }
+}
+
+/// A team of the supplier's own staff — a plain organisation: nobody serves it, so it has no tier.
+entity Team : Organization {
+  security { allow read, create, update when IsStaff; }
+}
+
+/// Sign in with an address and a code.
+[AuthMethod]
+string SignInWithCode(string email, string code) {
+  var p = Person.FirstOrDefault(x => x.Email == NormalisedEmail(email));
+  if (p == null || !p.IsActive) { Security.VerifyPassword(code); return ""; }
+  if (!Security.VerifyPassword(code, p.CodeHash)) { return ""; }
+  return Security.IssueJwt(p.Id, p.Email);
+}
+
+app.AuthBootstrap = new AuthBootstrap { Role = PortalRole.Authenticator, Login = SignInWithCode };
+app.Auth = new PasswordAuth { LoginField = Email, PasswordField = CodeHash };
+app.Audit = new AuditConfig { Redact = new AuditRedaction { Properties = [AccountsKitTests.Person.CodeHash] } };
+
+/// What a company's own buyer may do in the app's rules — add the company's people, and edit their memberships. The
+/// add-on's floors still hold: a buyer never makes anybody a VIP, nor sets the tier.
+partial entity Membership { security { allow create, update where HoldsRoleIn(Organization, PortalRole.Buyer); } }

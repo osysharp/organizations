@@ -1,0 +1,170 @@
+// The service an organisation gets — its tier, its entitlements, its account team, its VIPs — carried for the kits that
+// route and promise by them, and set by the app alone.
+// SECURITY-INVARIANT(organizations-service-is-the-apps-to-assign).
+
+using Osysharp.Identity;
+using Osysharp.Organizations;
+using Osysharp.Organizations.ServicePlans;
+using AccountsKitTests;
+
+[TestFixture]
+void Service() {
+  var sam = new Person { Email = "sam@supplier.test", DisplayName = "Sam", CodeHash = Security.HashPassword("1111") };
+  new RoleGrant { Member = sam, Role = PortalRole.Staff };
+  var kim = new Person { Email = "kim@supplier.test", DisplayName = "Kim", CodeHash = Security.HashPassword("1212") };
+  new RoleGrant { Member = kim, Role = PortalRole.Staff };
+  var standard = new OrganizationTier { Name = "Standard", Rank = 1, IsDefault = true };
+  var premium = new OrganizationTier { Name = "Premium", Rank = 2 };
+  var acme = new Company { Name = "Acme", Tier = premium };
+  var globex = new Company { Name = "Globex", Tier = standard };
+  new SupportEntitlement { Tier = premium, Name = "Phone support", Channel = "Phone", FirstReplyWithin = TimeSpan.FromHours(1) };
+  new SupportEntitlement { Tier = standard, Name = "Email support", Channel = "Email" };
+  new SupportEntitlement { Organization = acme, Name = "Named engineer", Channel = "Slack", FirstReplyWithin = TimeSpan.FromMinutes(30) };
+  var bea = new Person { Email = "bea@acme.com", DisplayName = "Bea", CodeHash = Security.HashPassword("4444") };
+  var mb = new Membership { Organization = acme, Member = bea };
+  new VipMembership { Membership = mb };
+  new MembershipRole { Membership = mb, Role = PortalRole.Buyer };
+  var ada = new Person { Email = "ada@acme.com", DisplayName = "Ada", CodeHash = Security.HashPassword("2222") };
+  new Membership { Organization = acme, Member = ada };
+  var gil = new Person { Email = "gil@globex.com", DisplayName = "Gil", CodeHash = Security.HashPassword("5555") };
+  new Membership { Organization = globex, Member = gil };
+}
+
+principal Sam => Person.Single(p => p.Email == "sam@supplier.test");
+principal Kim => Person.Single(p => p.Email == "kim@supplier.test");
+principal Bea => Person.Single(p => p.Email == "bea@acme.com");
+principal Ada => Person.Single(p => p.Email == "ada@acme.com");
+principal Gil => Person.Single(p => p.Email == "gil@globex.com");
+
+[Test(Service)]
+void an_organisation_is_entitled_to_its_own_contract_first_then_its_tiers() {
+  runas (Sam) {
+    var acme = Company.Single(c => c.Name == "Acme");
+    var all = EntitlementsOf(acme);
+    Assert.Equal(2, all.Count);
+    Assert.Equal("Named engineer", all[0].Name);
+    Assert.Equal("Phone support", all[1].Name);
+    Assert.Equal("Standard", DefaultTier()!.Name);
+  }
+}
+
+[Test(Service)]
+void a_companys_people_read_what_they_are_entitled_to_and_nothing_of_another() {
+  runas (Ada) {
+    Assert.Equal(2, SupportEntitlement.Count());
+    Assert.False(SupportEntitlement.Any(e => e.Name == "Email support"));
+  }
+  runas (Gil) {
+    Assert.Equal(1, SupportEntitlement.Count());
+    Assert.Equal("Email support", SupportEntitlement.Single().Name);
+  }
+}
+
+[Test(Service)]
+void the_account_team_has_one_owner_and_a_backup_and_the_companys_people_see_who_looks_after_them() {
+  runas (Sam) {
+    var acme = Company.Single(c => c.Name == "Acme");
+    var sam = Person.Single(p => p.Email == "sam@supplier.test");
+    var kim = Person.Single(p => p.Email == "kim@supplier.test");
+    SetAccountOwner(acme, sam);
+    AddToAccountTeam(acme, kim, AccountTeamRole.Backup);
+    UnitOfWork.Commit();
+    SetAccountOwner(acme, kim);
+    UnitOfWork.Commit();
+    Assert.Equal("kim@supplier.test", AccountOwnerOf(acme)!.Email);
+    Assert.Equal(1, AccountTeamMember.Count(m => m.Organization == acme && m.Role == AccountTeamRole.Owner));
+    Assert.Equal(2, AccountTeamOf(acme).Count);
+  }
+  runas (Ada) { Assert.Equal(2, AccountTeamMember.Count()); }
+  runas (Gil) { Assert.Equal(0, AccountTeamMember.Count()); }
+}
+
+[Test(Service)]
+void a_companys_own_people_never_set_its_tier_its_team_or_who_is_a_vip() {
+  OrganizationTier? standard = null;
+  runas (Sam) { standard = OrganizationTier.Single(t => t.Name == "Standard"); }
+  // Bea (Acme's buyer) may edit Acme's details — the app grants it — but not the service it is on.
+  runas (Bea) {
+    var acme = Company.Single(c => c.Name == "Acme");
+    acme.AccountNumber = "A-2";
+    UnitOfWork.Commit();
+  }
+  runas (Bea) {
+    var acme = Company.Single(c => c.Name == "Acme");
+    Assert.Denied(() => { acme.Tier = standard; UnitOfWork.Commit(); });
+  }
+  runas (Bea) {
+    // Bea may edit Ada's membership (the app grants a buyer that) — and still never make her a VIP, nor stop being one.
+    var ada = Membership.Single(m => m.Member == Ada);
+    Assert.Denied(() => { new VipMembership { Membership = ada }; UnitOfWork.Commit(); });
+  }
+  runas (Bea) {
+    Assert.Denied(() => { VipMembership.Single().Delete(); UnitOfWork.Commit(); });
+  }
+  runas (Bea) {
+    var acme = Company.Single(c => c.Name == "Acme");
+    Assert.Denied(() => { AddToAccountTeam(acme, Bea, AccountTeamRole.Owner); UnitOfWork.Commit(); });
+  }
+  runas (Sam) {
+    Assert.True(IsVipPerson(Bea));
+    Assert.False(IsVipPerson(Ada));
+  }
+}
+
+[Test(Service)]
+void a_vip_is_one_at_an_organisation_and_stops_being_one_when_they_leave_it() {
+  runas (Sam) {
+    var globex = Company.Single(c => c.Name == "Globex");
+    var gil = Person.Single(p => p.Email == "gil@globex.com");
+    MarkVip(globex, gil);
+    MarkVip(globex, gil);
+    UnitOfWork.Commit();
+    Assert.Equal(1, VipMembership.Count(v => v.Membership.Member == gil));
+    Assert.True(IsVipPerson(gil));
+    // Suspended by the directory: the membership is kept, and holds nothing — no VIP either.
+    Membership.Single(m => m.Member == gil).IsActive = false;
+    UnitOfWork.Commit();
+    Assert.False(IsVipPerson(gil));
+    Membership.Single(m => m.Member == gil).IsActive = true;
+    UnitOfWork.Commit();
+    UnmarkVip(globex, gil);
+    UnitOfWork.Commit();
+    Assert.False(IsVipPerson(gil));
+    // …and stays a member.
+    Assert.True(Membership.Any(m => m.Member == gil && m.Organization == globex && m.IsActive));
+  }
+  // Each person sees that they are a VIP, and nobody else's.
+  runas (Bea) { Assert.Equal(1, VipMembership.Count()); }
+  runas (Ada) { Assert.Equal(0, VipMembership.Count()); }
+}
+
+[Test(Service)]
+void the_tier_an_organisation_is_on_is_its_own_or_the_default() {
+  runas (Sam) {
+    var acme = Company.Single(c => c.Name == "Acme");
+    Assert.Equal("Premium", TierOfAccount(acme)!.Name);
+    var initech = new Company { Name = "Initech" };
+    UnitOfWork.Commit();
+    Assert.Equal("Standard", TierOfAccount(initech)!.Name);
+    Assert.Equal("Standard", TierOfAccount(null)!.Name);
+  }
+}
+
+[Test(Service)]
+void a_right_code_signs_in_and_a_wrong_one_or_an_unknown_address_does_not() {
+  Assert.NotEqual("", SignInWithCode("sam@supplier.test", "1111"));
+  Assert.Equal("", SignInWithCode("sam@supplier.test", "9999"));
+  Assert.Equal("", SignInWithCode("nobody@supplier.test", "1111"));
+}
+
+// ── the settings area ───────────────────────────────────────────────────────────────────────────────────────────────
+
+[Test(Service)]
+void the_kit_announces_its_tiers_page_to_the_organisation_managers_and_nobody_else() {
+  runas (Sam) {
+    var tiers = AnnouncedSettings().Single(l => l.To == "/settings/tiers");
+    Assert.Equal("Tiers", tiers.Label);
+    Assert.Equal("Organizations", tiers.Group);
+  }
+  runas (Bea) { Assert.False(AnnouncedSettings().Any(l => l.To == "/settings/tiers")); }
+}

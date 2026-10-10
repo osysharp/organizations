@@ -1,0 +1,56 @@
+// The tiers page as the supplier's staff use it — each level of service, what everybody on it is entitled to, and a
+// change kept only on Save; a company's own people are refused it. `osy test --pixels` photographs it.
+
+using Osysharp.Identity;
+using Osysharp.Organizations;
+using Osysharp.Organizations.ServicePlans;
+using AccountsKitTests;
+
+[TestFixture]
+void Tiers() {
+  var sam = new Person { Email = "sam@supplier.test", DisplayName = "Sam", CodeHash = Security.HashPassword("1111") };
+  new RoleGrant { Member = sam, Role = PortalRole.Staff };
+  var standard = new OrganizationTier { Name = "Standard", Rank = 1, IsDefault = true, Description = "Email, next working day." };
+  var premium = new OrganizationTier { Name = "Premium", Rank = 2, Description = "Phone, within the hour." };
+  new SupportEntitlement { Tier = standard, Name = "Email support", Channel = "Email" };
+  new SupportEntitlement { Tier = premium, Name = "Phone support", Channel = "Phone", FirstReplyWithin = TimeSpan.FromHours(1) };
+  var acme = new Company { Name = "Acme", Tier = premium };
+  var bea = new Person { Email = "bea@acme.com", DisplayName = "Bea", CodeHash = Security.HashPassword("4444") };
+  var mb = new Membership { Organization = acme, Member = bea };
+  new MembershipRole { Membership = mb, Role = PortalRole.Buyer };
+}
+
+principal Sam => Person.Single(p => p.Email == "sam@supplier.test");
+principal Bea => Person.Single(p => p.Email == "bea@acme.com");
+
+[Test(Tiers)]
+void staff_add_what_a_tier_includes_and_it_is_kept_on_save() {
+  Ui.Viewport(1440, 900);
+  Ui.SignInAs(Sam);
+  Ui.Visit("/settings/tiers");
+  Assert.Visible("Email support", within: "Standard");
+  Assert.Visible("Phone support", within: "Premium");
+  Ui.Fill("Add to Premium", "A named engineer");
+  Ui.Click("Add it to Premium");
+  Assert.Visible("A named engineer", within: "Premium");
+  Ui.Shot("tiers-wide");
+  Ui.Click("Save");
+  Assert.Visible("Tiers saved.");
+  runas (Sam) {
+    Assert.True(Entitlement.Any(e => e.Name == "A named engineer" && e.Tier.Name == "Premium"));
+  }
+
+  Ui.Viewport(390, 844);
+  Ui.Visit("/settings/tiers");
+  Assert.Visible("A named engineer", within: "Premium");
+  Assert.NoOverflow();
+  Ui.Shot("tiers-phone");
+}
+
+[Test(Tiers)]
+void a_companys_own_people_are_refused_the_tiers_page() {
+  Ui.Viewport(1440, 900);
+  Ui.SignInAs(Bea);
+  Ui.Visit("/settings/tiers");
+  Assert.Hidden("Add to Premium");
+}
