@@ -2,16 +2,5 @@
   "platform": {
     "version": "0.9.0"
   },
-  "entries": [
-    {
-      "name": "Osysharp.Identity",
-      "kind": "package",
-      "version": "0.8.1",
-      "hash": "sha256:83723f5577bbbb2aea58fbee2360a4e00db5c2cfd35f8532ce7be70be153b6fd",
-      "minPlatform": "0.9.0",
-      "shadow": "app-forkable",
-      "source": "workspace:kits/identity",
-      "constraint": "0"
-    }
-  ]
+  "entries": []
 }

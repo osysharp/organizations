@@ -72,7 +72,7 @@ public class Signins : AccountEvents {
 ## The service a customer gets — the Accounts add-on
 
 What a vendor keeps about the organisations it **serves** — the tier each is on, what it is entitled to, the account team
-looking after it and its VIP people — is a separate kit, `Osysharp.Organizations.Accounts`, that uses this one. An app
+looking after it and its VIP people — is a separate kit, `Osysharp.Organizations.ServicePlans`, that uses this one. An app
 that only needs "these people belong to this organisation" takes this kit alone.
 
 ## What an app calls
@@ -86,4 +86,4 @@ that only needs "these people belong to this organisation" takes this kit alone.
 | `OrganizationsOf(person)` · `DomainOf(email)` · `IsPublicMailDomain(domain)` | |
 
 Invitations into an organisation are `Osysharp.Invitations`; the people list that shows and changes memberships is
-`Osysharp.People`.
+`Osysharp.UserManagement`.
