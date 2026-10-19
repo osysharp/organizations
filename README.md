@@ -80,7 +80,8 @@ that only needs "these people belong to this organisation" takes this kit alone.
 | | |
 |---|---|
 | `IsMemberOf(org)` · `HoldsRoleIn(org, role)` | policies — the caller's membership and roles, for rules |
-| `Join(org, person)` · `Leave(org, person)` | add (or wake a suspended membership) · remove, with every role held there |
+| `Join(org, person)` · `Leave(org, person)` | add (or wake a suspended membership) · the bare removal, unrecorded |
+| `RemoveMember(org, person)` | take a person out — or leave, as the caller: recorded (`MembershipRemoval`), their roles and membership gone, the app told (`OrganizationsSetup.Events`), the person mailed; the last holder of `OrganizationsSetup.KeepOneOf` refused by name; their account untouched |
 | `GrantIn(org, person, role)` · `RevokeIn(org, person, role)` · `HoldsIn(person, org, role)` | roles within one organisation |
 | `AddDomain(org, "acme.com", joinRole?)` · `OrganizationByDomain(email)` · `JoinByDomain(person)` | mail domains |
 | `OrganizationsOf(person)` · `DomainOf(email)` · `IsPublicMailDomain(domain)` | |

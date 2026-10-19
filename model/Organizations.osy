@@ -1,6 +1,8 @@
 namespace Osysharp.Organizations;
 
 using Osysharp.Identity;
+using Osysharp.Mail;
+using Osysharp.Workflow;
 
 // ── who looks after them — the app's to say ──────────────────────────────────────────────────────────────────────────
 
@@ -47,7 +49,9 @@ public enum MembershipSource {
 ///   app adds the rest. An app's own subtype states its own grants (they are never inherited).
 [Authority(Extensible)]
 public entity Organization {
-  [Required("Give the organisation a name."), MaxLength(200)] string Name;
+  // 255, not 200: an app that rebases its own organizations onto this kit keeps the names it stores (Admin's was 255; a
+  // narrower kit made Admin 3.0.0's deploy a refused narrowing on the GCP beta, 2026-10-14).
+  [Required("Give the organisation a name."), MaxLength(255)] string Name;
   /// The organisation this one is part of — a company in a group, a team in a department. None for a top-level one.
   Organization? Parent;
   /// An organisation that is not active is kept, with its people and its history; it takes no new members.
@@ -148,12 +152,94 @@ public entity MembershipRole {
     allow create, delete when ManagesOrganizations;
     // The sign-in flow gives a person who joins by a domain the domain's role (`JoinByDomain`), and nothing else.
     allow create when IsAuthenticator where Membership.Source == MembershipSource.Domain;
-    deny create when !IsAuthenticator where Membership.Member == user;
+    // ⚑ `IsAuthenticated`: the floor is about a PERSON giving themself a role. With nobody acting — a workflow body, a
+    //   migration's `run` — there is no "themself", and `Member == user` over no user is unknown, which a deny takes as
+    //   applying: Admin 2.2.0's migration copy of its owners' roles was refused by exactly that (S12).
+    deny create when IsAuthenticated && !IsAuthenticator where Membership.Member == user;
     deny create where Role == role.Authenticator;
     // A role row is a fact, made or removed — never edited into another role or onto another person.
     deny update Membership;
     deny update Role;
   }
+}
+
+// ── the kind of membership the app's organisations have ───────────────────────────────────────────────────────────
+
+/// How the app keeps its organisations — `app.Organizations = new OrganizationsSetup { … }`. Every member has a working
+/// default.
+[AppSetting("Organizations")]
+public class OrganizationsSetup {
+  /// What kind of membership a person joining is given — derive and override when the app derives its own
+  /// (`MembershipKinds`).
+  public MembershipKinds Memberships = new MembershipKinds();
+  /// A role an organisation must never be left without a holder of — its owner role, typically. Taking the last holder
+  /// out of the organisation (`RemoveMember`) is refused, by name. None: anybody may be taken out.
+  public role? KeepOneOf = null;
+  /// What a holder of `KeepOneOf` is called in a sentence — "owner": "Ada is the last owner of Acme".
+  public string KeepOneOfCalled = "";
+  /// What the app does when a person is taken out of an organisation — derive and override to end what it hangs on the
+  /// membership (`MembershipEvents`).
+  public MembershipEvents Events = new MembershipEvents();
+  /// The mail a person taken out of an organisation is sent — derive and override to write your own (`MembershipMails`).
+  public MembershipMails Mails = new MembershipMails();
+}
+
+/// What the app does when a person is taken out of an organisation. Called by the removal's run — as the system, in the
+/// write that takes them out, so what it ends ends with the membership or not at all. Derive, override and name it in
+/// `app.Organizations` (`Events = new MyEvents()`):
+///
+///     public class DeskMemberships : MembershipEvents {
+///       public override void Removed(MembershipRemoval removal) {
+///         foreach (var s in Seat.Where(x => x.Company == removal.Organization && x.Holder == removal.Member).ToList()) { s.Delete(); }
+///       }
+///     }
+public class MembershipEvents {
+  /// `removal.Member` is out of `removal.Organization` — their membership and their roles there are already gone.
+  public virtual void Removed(MembershipRemoval removal) { }
+}
+
+/// The mail a person taken out of an organisation is sent. Answer null to send none. By default a person removed by
+/// somebody else is told who removed them, from what, and that their account remains; a person who left is sent nothing.
+public class MembershipMails {
+  public virtual MailMessage? Removed(MembershipRemoval removal) {
+    if (removal.RemovedBy.Id == removal.Member.Id) { return null; }
+    var org = removal.Organization.Name;
+    return new MailMessage {
+      To = [removal.Member.Email],
+      Subject = $"You were removed from {org}",
+      Text = $"{PersonNameOf(removal.RemovedBy)} removed you from {org} on {removal.At.ToString("d MMMM yyyy")}.\n\n"
+        + $"You no longer have access to {org}, or to anything you reached through it. Your account remains: you can still "
+        + "sign in, and anything else you belong to is unchanged.\n\nIf you think this is a mistake, ask somebody who looks "
+        + $"after {org} to invite you again.",
+    };
+  }
+}
+
+/// The membership a person joining an organisation is given — by `Join`, a mail domain (`JoinByDomain`), an accepted
+/// invitation (`Osysharp.Invitations`) or the user manager (`Osysharp.UserManagement`). By default the kit's own
+/// `Membership`; an app whose memberships are its OWN subtype — `TeamMember : Membership { … }` — says so, or every row a
+/// kit makes is a plain `Membership` its own queries over `TeamMember` never see:
+///
+///     public class TeamMemberships : MembershipKinds {
+///       public override Membership New(Organization organization, Principal person, MembershipSource source) {
+///         if (organization is Team t) { return new TeamMember { Organization = t, Member = person, Source = source }; }
+///         return base.New(organization, person, source);
+///       }
+///     }
+///     app.Organizations = new OrganizationsSetup { Memberships = new TeamMemberships() };
+public class MembershipKinds {
+  public virtual Membership New(Organization organization, Principal person, MembershipSource source) {
+    return new Membership { Organization = organization, Member = person, Source = source, JoinedAt = DateTime.UtcNow };
+  }
+}
+
+/// A new membership of the app's own kind (`OrganizationsSetup.Memberships`), checked to be for whom it was asked.
+Membership NewMembership(Organization org, Principal person, MembershipSource source) {
+  var made = App.Setting<OrganizationsSetup>().Memberships.New(org, person, source);
+  if (made.Member.Id != person.Id || made.Organization.Id != org.Id) {
+    throw new ValidationException("The app's MembershipKinds.New made a membership for another person or organisation — it must use the ones it was given.");
+  }
+  return made;
 }
 
 // ── policies an app writes its rules with ───────────────────────────────────────────────────────────────────────────
@@ -218,10 +304,12 @@ public Membership Join(Organization org, Principal person, MembershipSource sour
     if (!existing.IsActive) { existing.IsActive = true; }
     return existing;
   }
-  return new Membership { Organization = org, Member = person, Source = source, JoinedAt = DateTime.UtcNow };
+  return NewMembership(org, person, source);
 }
 
-/// Take `person` out of `org`, with every role they held there.
+/// Take `person` out of `org`, with every role they held there — the bare step: unrecorded, nobody told. A person taken
+/// out by somebody, or leaving, goes through `RemoveMember`, which records it, tells the app and mails them; this is for
+/// whoever keeps memberships in step with an outside source (an identity provider's sign-in, a SCIM feed).
 [SuppressWarning("cost-unbounded-read")]   // one membership's roles
 public void Leave(Organization org, Principal person) {
   var m = Membership.FirstOrDefault(x => x.Organization == org && x.Member == person);
@@ -257,6 +345,131 @@ public List<Organization> OrganizationsOf(Principal person) {
   return Membership.Where(m => m.Member == person && m.IsActive).Select(m => m.Organization).OrderBy(o => o.Name).ToList();
 }
 
+// ── taking a person out ─────────────────────────────────────────────────────────────────────────────────────────────
+
+// ⚠ Appended, never inserted: an enum is stored by position.
+/// Where a removal stands — moved by its run alone.
+public enum MembershipRemovalState {
+  [Label("Asked")] Requested,
+  [Label("Removed")] Removed,
+  [Label("Refused")] Refused,
+}
+
+/// One person taken out of one organisation — whom, by whom, when, and what kind of membership it ended. Made by the
+/// person doing it (`RemoveMember`) and applied by its run in the commit that records it: their roles there and their
+/// membership go, the app is told (`OrganizationsSetup.Events`) and the person is mailed (`OrganizationsSetup.Mails`).
+/// Never edited, never deleted: it IS the record of who took whom out.
+///
+/// ⚑ REMOVAL IS NOT ERASURE. Their account, and everything else they belong to, stays — a removal takes them out of ONE
+///   organisation. The membership is deleted rather than suspended: `IsActive` belongs to the identity provider or
+///   directory that made a membership, and a membership one of those made is removed there (`RemovalProblem`).
+///
+/// SECURITY-INVARIANT(organizations-a-removal-is-asked-by-its-remover): a person is taken out of an organisation through
+/// the kit only by recording a removal naming the caller as `RemovedBy` — the app's organisation managers
+/// (`ManagesOrganizations`), the person themself (leaving), or whoever else the app grants — and a removal is never
+/// edited or deleted. Its run applies it as the system, so WHO may ask is this entity's `create` rule and nothing else.
+/// Guarded by tests/removal.test.osy.
+[Authority(Extensible)]
+public entity MembershipRemoval {
+  [Required] Organization Organization;
+  [Required] Principal Member;
+  [Required] Principal RemovedBy;
+  /// How they had come to be in it — the membership the removal ended.
+  MembershipSource Source = MembershipSource.Local;
+  DateTime At = DateTime.UtcNow;
+  MembershipRemovalState State;
+  /// Why it was not applied — set only on a refused removal.
+  [MaxLength(500)] string? Refusal;
+
+  security {
+    allow read when ManagesOrganizations || IsAuthenticator;
+    // A person reads what was done to their own place in an organisation.
+    allow read when IsAuthenticated where Member == user;
+    allow create when ManagesOrganizations;
+    // Anybody may leave an organisation they are in.
+    allow create when IsOrganizationMember where Member == user;
+    // The remover recorded is whoever asked.
+    deny create when IsAuthenticated where RemovedBy != user;
+    deny update Organization, Member, RemovedBy, Source, At, State, Refusal;
+    deny delete;
+  }
+}
+
+workflow MembershipRemovalFlow {
+  Tracks    = MembershipRemoval.State;
+  Autostart = true;
+  Initial   = Requested;
+
+  // Applied in the commit that records it, as the system: who may ask is the removal's own `create` rule, and the rules
+  // every removal obeys are checked here again, because a removal can be recorded without `RemoveMember`.
+  state Requested {
+    enter {
+      var r = this.Item;
+      var problem = RemovalProblem(r.Organization, r.Member);
+      if (problem != "") {
+        r.Refusal = problem;
+        goto Refused;
+      }
+      ApplyRemoval(r);
+      goto Removed;
+    }
+  }
+  terminal success Removed { }
+  terminal error Refused { Message = "removal refused"; }
+}
+
+/// A person's name for a sentence — their display name, else their address.
+public string PersonNameOf(Principal p) { return p.DisplayName != "" ? p.DisplayName : p.Email; }
+
+/// "" when `person` may be taken out of `org`, else the sentence saying why not: they are not in it; their membership
+/// came from the organisation's identity provider or directory (it is removed THERE — the next sync would put it back);
+/// or they are its last holder of `OrganizationsSetup.KeepOneOf`.
+public string RemovalProblem(Organization org, Principal person) {
+  var m = Membership.FirstOrDefault(x => x.Organization == org && x.Member == person);
+  if (m == null) { return $"{PersonNameOf(person)} is not in {org.Name}."; }
+  if (m.Source == MembershipSource.Idp || m.Source == MembershipSource.Scim) {
+    return $"{PersonNameOf(person)} is in {org.Name} through its {m.Source.Label} — remove them there, or the next sync puts them back.";
+  }
+  var keep = App.Setting<OrganizationsSetup>().KeepOneOf;
+  if (keep != null && MembershipRole.Any(g => g.Membership.Id == m.Id && g.Role == keep.Value)
+      && !MembershipRole.Any(g => g.Membership.Organization == org && g.Membership.Id != m.Id && g.Membership.IsActive && g.Role == keep.Value)) {
+    var called = App.Setting<OrganizationsSetup>().KeepOneOfCalled;
+    if (called == "") { return $"{PersonNameOf(person)} is the last person holding that role in {org.Name} — give it to someone else first."; }
+    return $"{PersonNameOf(person)} is the last {called} of {org.Name} — make someone else its {called} first.";
+  }
+  return "";
+}
+
+/// Take `removal.Member` out — their roles there, their membership — then tell the app, and mail them. The run's.
+[SuppressWarning("cost-unbounded-read")]   // one membership's roles
+void ApplyRemoval(MembershipRemoval removal) {
+  var m = Membership.FirstOrDefault(x => x.Organization == removal.Organization && x.Member == removal.Member);
+  if (m != null) {
+    removal.Source = m.Source;
+    foreach (var r in MembershipRole.Where(x => x.Membership == m).ToList()) { r.Delete(); }
+    m.Delete();
+  }
+  var setup = App.Setting<OrganizationsSetup>();
+  setup.Events.Removed(removal);
+  var mail = setup.Mails.Removed(removal);
+  if (mail != null) { SendMail(mail, $"membership-removal-{removal.Id}"); }
+}
+
+/// Take `person` out of `org` — or leave it, when `person` is the caller. Their roles there and their membership go, the
+/// app is told (`OrganizationsSetup.Events`, where an app ends the access it hangs on the membership), they are mailed,
+/// and the removal is recorded (`MembershipRemoval`). Their account stays. Who may do it is the removal's own rule: the
+/// app's organisation managers, the person themself, and whoever else the app grants. Throws the sentence to show when
+/// it cannot be done (`RemovalProblem` — the last owner, by name), and the refusal when the caller may not.
+public MembershipRemoval RemoveMember(Organization org, Principal person) {
+  var me = Session.CurrentUser;
+  if (me == null) { throw new ValidationException("Sign in to take somebody out of an organisation."); }
+  var problem = RemovalProblem(org, person);
+  if (problem != "") { throw new ValidationException(problem); }
+  var made = new MembershipRemoval { Organization = org, Member = person, RemovedBy = me!, At = DateTime.UtcNow };
+  UnitOfWork.Commit();
+  return made;
+}
+
 /// Put `person` in the organisation whose domain their address is on — when that address is PROVEN, the domain lets
 /// people join on their own, and the organisation is active — holding the domain's `JoinRole` there. Answers the
 /// membership, or null when nothing applied. Meant to run as the sign-in flow, from the app's `AccountEvents.SignedIn`:
@@ -283,7 +496,9 @@ public Membership? JoinByDomain(Principal person) {
   var org = domain.Organization;
   var existing = Membership.FirstOrDefault(m => m.Organization == org && m.Member == person);
   if (existing != null) { return existing; }
-  var made = new Membership { Organization = org, Member = person, Source = MembershipSource.Domain, JoinedAt = DateTime.UtcNow };
+  // A person taken out of it (or who left) does not walk back in by their address — an invitation brings them back.
+  if (MembershipRemoval.Any(r => r.Organization == org && r.Member == person && r.State == MembershipRemovalState.Removed)) { return null; }
+  var made = NewMembership(org, person, MembershipSource.Domain);
   if (domain.JoinRole != null) { new MembershipRole { Membership = made, Role = domain.JoinRole.Value }; }
   return made;
 }

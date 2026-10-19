@@ -17,10 +17,12 @@
 //   people — is the add-on `Osysharp.Organizations.ServicePlans`, which uses this one. An app that only needs
 //   "these people belong to this organisation" takes this kit alone.
 package Osysharp.Organizations {
-  version "0.4.3";
-  minPlatform "0.9.0";
-  summary     "customer companies and internal teams: who belongs to which, roles held within one organisation (the app's own roles, scoped), mail domains that put a newcomer with a PROVEN address in the right company, and membership rows that remember their source and external id so single sign-on and SCIM can keep them in step.";
+  version "0.7.0";
+  minPlatform "0.14.0";
+  summary     "customer companies and internal teams: who belongs to which, roles held within one organisation (the app's own roles, scoped), mail domains that put a newcomer with a PROVEN address in the right company, taking a person out (or leaving) — recorded, mailed, the last owner kept — and membership rows that remember their source and external id so single sign-on and SCIM can keep them in step.";
   model "model/**/*.osy";
   use Osysharp.Identity@0;
+  use Osysharp.Mail@0;
+  use Osysharp.Workflow;
   tests "tests";
 }

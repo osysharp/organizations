@@ -132,3 +132,20 @@ void a_membership_is_never_moved_to_another_company_or_person() {
     Assert.Denied(() => { m.Organization = globex; });
   }
 }
+
+// An app may make its own kind of membership (`OrganizationsSetup.Memberships`): the kit's Join makes one of those, so
+// the app reads it as its own.
+[Test(Companies)]
+void a_membership_the_kit_makes_is_the_apps_own_kind() {
+  runas (Sam) {
+    var acme = Company.Single(c => c.Name == "Acme");
+    var team = new Team { Name = "Support" };
+    var gil = Person.Single(p => p.Email == "gil@globex.com");
+    Join(acme, gil);
+    Join(team, gil);
+    UnitOfWork.Commit();
+    Assert.Equal(1, CompanyMember.Count(m => m.Member == gil && m.Organization == acme));
+    Assert.Equal(0, CompanyMember.Count(m => m.Member == gil && m.Organization == team));
+    Assert.Equal(1, Membership.Count(m => m.Member == gil && m.Organization == team));
+  }
+}

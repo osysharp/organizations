@@ -71,3 +71,45 @@ app.Audit = new AuditConfig { Redact = new AuditRedaction { Properties = [Organi
 /// kit's types, ORed with the kit's own: the kit's floors (no self-granted role, no Authenticator) still hold.
 partial entity Membership { security { allow create, update where HoldsRoleIn(Organization, PortalRole.Buyer); } }
 partial entity MembershipRole { security { allow create where HoldsRoleIn(Membership.Organization, PortalRole.Buyer); } }
+
+/// The portal's own kind of membership at a customer company — what the supplier keeps about a person there. Every
+/// membership the kit makes at a company is one of these (`OrganizationsSetup.Memberships`); at a team, the kit's own.
+entity CompanyMember : Membership {
+  [MaxLength(80)] string Title = "";
+  // The app's own kind states its own rules: staff keep them, a company's people read their company's, and the sign-in
+  // flow (the Authenticator) makes one when a proven address joins by its domain.
+  security {
+    allow read, create, update, delete when IsStaff;
+    allow read when IsOrganizationMember
+      where Member == user || Membership.Any(m => m.Organization == Organization && m.Member == user);
+    allow read when IsAuthenticator;
+    allow create when IsAuthenticator where Source == MembershipSource.Domain;
+  }
+}
+
+public class PortalMemberships : MembershipKinds {
+  public override Membership New(Organization organization, Principal person, MembershipSource source) {
+    if (organization is Company) {
+      return new CompanyMember { Organization = organization, Member = person, Source = source, JoinedAt = DateTime.UtcNow };
+    }
+    return base.New(organization, person, source);
+  }
+}
+
+/// A company's desk in the portal — something the app hangs on a person's place at a company, which must go when they do.
+entity CompanyDesk {
+  [Required] Company Company;
+  [Required] Principal Holder;
+  security { allow read, create, delete when IsStaff; allow read where Holder == user; }
+}
+
+/// What the portal ends when a person is taken out of a company: the desks they held there.
+public class PortalMembershipEvents : MembershipEvents {
+  public override void Removed(MembershipRemoval removal) {
+    foreach (var d in CompanyDesk.Where(x => x.Company.Id == removal.Organization.Id && x.Holder == removal.Member).ToList()) { d.Delete(); }
+  }
+}
+
+// A company always keeps a buyer.
+app.Organizations = new OrganizationsSetup { Memberships = new PortalMemberships(), KeepOneOf = PortalRole.Buyer, KeepOneOfCalled = "buyer",
+                                             Events = new PortalMembershipEvents() };

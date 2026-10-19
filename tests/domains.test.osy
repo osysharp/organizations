@@ -112,3 +112,17 @@ void a_domain_that_only_suggests_joins_nobody() {
   runas (Ada) { Assert.False(Membership.Any(m => m.Member == Ada)); }
   runas (Sam) { Assert.Equal("Acme", OrganizationByDomain("someone@ACME.com")!.Name); }
 }
+
+// ⛔ A MEMBERSHIP OF THE APP'S OWN KIND COUNTS AT ONCE — and, the direction that matters for security, stops counting at
+//   once. `IsOrganizationMember` reads `Membership` (its subtypes included) and its answer is kept between requests until a
+//   write to what it read retires it (SECURITY-INVARIANT a-cached-answer-dies-with-any-write-it-read). Measured 2026-10-14:
+//   a write of a SUBTYPE row (`CompanyMember`) did not retire it — Tom, asked once before he joined, still read nothing
+//   after (and so a removed member would keep reading). Red until the platform retires a base's kept answers on a
+//   subtype's write; reproduced in a plain app too (a `GoldMembership : Membership` row, a policy over `Membership.Any`).
+[Test(Portal)]
+void a_membership_of_the_apps_own_kind_counts_at_once() {
+  runas (Tom) { Assert.Equal(0, Membership.Count(m => m.Member == Tom)); }
+  runas (Sam) { new CompanyMember { Organization = Company.Single(c => c.Name == "Acme"), Member = Tom }; }
+  UnitOfWork.Commit();
+  runas (Tom) { Assert.Equal(1, Membership.Count(m => m.Member == Tom)); }
+}

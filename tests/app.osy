@@ -4,5 +4,7 @@ app OrganizationsKitTests {
   model "model/**/*.osy";
   tests "**/*.test.osy";
   use Osysharp.Identity@0;
+  use Osysharp.Mail@0;
+  use Osysharp.Workflow;
   use Osysharp.Organizations@0;
 }
