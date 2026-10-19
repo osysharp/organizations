@@ -13,8 +13,8 @@
 // ⚑ THE SAME ONE QUESTION AS THE BASE: `policy ManagesOrganizations` — who sets a tier, an entitlement, an account team
 //   and who is a VIP. Never an organisation's own people, whatever the app lets them edit.
 package Osysharp.Organizations.ServicePlans {
-  version "0.2.2";
-  minPlatform "0.9.0";
+  version "0.3.0";
+  minPlatform "0.14.0";
   summary     "the service each customer organisation gets — its tier, its entitlements (by tier or its own contract, for a period), its account team (owner, pod, backup) and its VIP people — set by the app's organisation managers alone, and carried for support and sales kits to route and promise by; with a settings page for the tiers.";
   model "model/**/*.osy";
   use Osysharp.Identity@0;

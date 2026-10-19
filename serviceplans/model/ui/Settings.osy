@@ -23,10 +23,14 @@ public class AccountSettingsSections : ISettingsProvider {
 /// saved until Save.
 [Composable]
 public component TierEditor(string description = "The levels of service an organisation can be on. An organisation's tier is what it is entitled to, and what a support or sales kit promises it by; its own contract can add more.") {
+  // Every tier and every entitlement: an editor, whose new row is on the list before Save only while the list is every
+  // row (a windowed one takes new rows from its re-read after the commit). Levels of service are a handful by design.
+  [SuppressWarning("ui-page-query-without-a-take")]
   live var tiers = OrganizationTier.OrderBy(t => t.Rank).ToList();
   // ⚠ UNFILTERED on purpose: a row added on the page joins only a list of EVERY row of its type until it is saved
   //   (the browser never evaluates a server filter), so "a tier's own, not a contract's" is asked
   //   below, in memory, where the new row is seen at once.
+  [SuppressWarning("ui-page-query-without-a-take")]
   live var entitlements = Entitlement.Include(e => e.Tier).OrderBy(e => e.Name).ToList();
 
   action AddTier() { UnitOfWork.Mark("Add a tier"); new OrganizationTier { Name = "New tier", Rank = tiers.Count + 1 }; }
