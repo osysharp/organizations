@@ -82,3 +82,88 @@ its promise is chosen by its tier and whether the person asking is a VIP.
 The kit's test app is a supplier's portal: two customer companies on two tiers, a contract of their own, an account
 team, and a VIP buyer who may edit her company's details but never its tier, its team or who is a VIP. The tiers page
 is driven as a person would use it, wide and on a phone.
+
+## Examples
+
+Taken from this package's own tests, which compile and run on every release.
+
+```osy
+using Osysharp.Identity;
+using Osysharp.Organizations;
+using Osysharp.Organizations.ServicePlans;
+using AccountsKitTests;
+
+[Test(Service)]
+void an_organisation_is_entitled_to_its_own_contract_first_then_its_tiers() {
+  runas (Sam) {
+    var acme = Company.Single(c => c.Name == "Acme");
+    var all = EntitlementsOf(acme);
+    Assert.Equal(2, all.Count);
+    Assert.Equal("Named engineer", all[0].Name);
+    Assert.Equal("Phone support", all[1].Name);
+    Assert.Equal("Standard", DefaultTier()!.Name);
+  }
+}
+```
+
+From [`tests/service.test.osy`](tests/service.test.osy).
+
+```osy
+using Osysharp.Identity;
+using Osysharp.Organizations;
+using Osysharp.Organizations.ServicePlans;
+using AccountsKitTests;
+
+[Test(Service)]
+void a_companys_people_read_what_they_are_entitled_to_and_nothing_of_another() {
+  runas (Ada) {
+    Assert.Equal(2, SupportEntitlement.Count());
+    Assert.False(SupportEntitlement.Any(e => e.Name == "Email support"));
+  }
+  runas (Gil) {
+    Assert.Equal(1, SupportEntitlement.Count());
+    Assert.Equal("Email support", SupportEntitlement.Single().Name);
+  }
+}
+```
+
+From [`tests/service.test.osy`](tests/service.test.osy).
+
+```osy
+using Osysharp.Identity;
+using Osysharp.Organizations;
+using Osysharp.Organizations.ServicePlans;
+using AccountsKitTests;
+
+[Test(Service)]
+void the_account_team_has_one_owner_and_a_backup_and_the_companys_people_see_who_looks_after_them() {
+  runas (Sam) {
+    var acme = Company.Single(c => c.Name == "Acme");
+    var sam = Person.Single(p => p.Email == "sam@supplier.test");
+    var kim = Person.Single(p => p.Email == "kim@supplier.test");
+    SetAccountOwner(acme, sam);
+    AddToAccountTeam(acme, kim, AccountTeamRole.Backup);
+    UnitOfWork.Commit();
+    SetAccountOwner(acme, kim);
+    UnitOfWork.Commit();
+    Assert.Equal("kim@supplier.test", AccountOwnerOf(acme)!.Email);
+    Assert.Equal(1, AccountTeamMember.Count(m => m.Organization == acme && m.Role == AccountTeamRole.Owner));
+    Assert.Equal(2, AccountTeamOf(acme).Count);
+  }
+  runas (Ada) { Assert.Equal(2, AccountTeamMember.Count()); }
+  runas (Gil) { Assert.Equal(0, AccountTeamMember.Count()); }
+}
+```
+
+From [`tests/service.test.osy`](tests/service.test.osy).
+
+## Learn more
+
+- [The Osysharp.Organizations.ServicePlans reference](https://osysharp.com/reference/security/organizations-accounts-kit/)
+- [Osysharp.Organizations.ServicePlans in the package catalogue](https://osysharp.com/packages/#osysharp-organizations-serviceplans)
+- [The Osy# reference](https://osysharp.com/reference/) — the language, the runtime and every kit
+- [`llms-full.txt`](https://osysharp.com/llms-full.txt) — the whole reference and specification as one Markdown file, for a coding agent
+
+## Licence
+
+MIT — see [`LICENSE`](LICENSE).
