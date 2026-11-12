@@ -96,6 +96,26 @@ Taken from this package's own tests, which compile and run on every release.
 ```osy
 using Osysharp.Identity;
 using Osysharp.Organizations;
+using Osysharp.Mail;
+using Osysharp.Workflow;
+using OrganizationsKitTests;
+
+[Test(AcmeWithAKeyholder)]
+void a_removal_the_apps_rule_refuses_is_refused_whole_in_the_rules_words() {
+  runas (Sam) {
+    var refusal = Assert.Throws<ValidationException>(() => RemoveMember(TheCompany(), Kay));
+    Assert.Equal("A keyholder hands the keys back at the desk first.", refusal.Message);
+  }
+  AssertKayIsUntouched();
+  AssertTheRemovalIsRecordedRefused();
+}
+```
+
+From [`tests/app-rules.test.osy`](tests/app-rules.test.osy).
+
+```osy
+using Osysharp.Identity;
+using Osysharp.Organizations;
 using OrganizationsKitTests;
 
 [Test(Portal)]
@@ -154,28 +174,6 @@ void a_manager_takes_a_person_out_and_it_is_recorded_mailed_and_their_access_end
 ```
 
 From [`tests/removal.test.osy`](tests/removal.test.osy).
-
-```osy
-using Osysharp.Identity;
-using Osysharp.Organizations;
-using OrganizationsKitTests;
-
-[Test(Companies)]
-void a_buyer_at_acme_buys_for_acme_and_for_nobody_else() {
-  runas (Bea) {
-    var acme = Company.Single(c => c.Name == "Acme");
-    new PurchaseOrder { Company = acme, Reference = "A-100" };
-    UnitOfWork.Commit();
-    // Globex is not hers to read, let alone to buy for.
-    Assert.False(Company.Any(c => c.Name == "Globex"));
-  }
-  Company? globex = null;
-  runas (Sam) { globex = Company.Single(c => c.Name == "Globex"); }
-  runas (Bea) { Assert.Denied(() => new PurchaseOrder { Company = globex!, Reference = "G-200" }); }
-}
-```
-
-From [`tests/roles.test.osy`](tests/roles.test.osy).
 
 ## Learn more
 

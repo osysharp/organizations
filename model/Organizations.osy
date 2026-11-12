@@ -410,13 +410,26 @@ workflow MembershipRemovalFlow {
         r.Refusal = problem;
         goto Refused;
       }
-      ApplyRemoval(r);
+      // The APP's own rules hold here as on any write (SECURITY-INVARIANT(an-apps-deny-binds-every-kits-code)): a
+      // `deny delete where Role == X` on `MembershipRole` refuses the removal WHOLE — the `try` takes back whatever of
+      // it was already done — and its sentence is this removal's refusal, said to whoever asked (`RemoveMember`).
+      // Only a rule's refusal is taken so: any other fault is a fault of the run.
+      var refused = "";
+      try { ApplyRemoval(r); }
+      catch (Exception e) when (e.Type == "SecurityException") { refused = RuleRefusal(e.Message); }
+      if (refused != "") {
+        r.Refusal = refused;
+        goto Refused;
+      }
       goto Removed;
     }
   }
   terminal success Removed { }
   terminal error Refused { Message = "removal refused"; }
 }
+
+/// The sentence a removal refused by one of the app's own rules records and says, kept to what the record holds.
+string RuleRefusal(string message) { return message.Length <= 500 ? message : message.Substring(0, 497) + "…"; }
 
 /// A person's name for a sentence — their display name, else their address.
 public string PersonNameOf(Principal p) { return p.DisplayName != "" ? p.DisplayName : p.Email; }
@@ -459,7 +472,9 @@ void ApplyRemoval(MembershipRemoval removal) {
 /// app is told (`OrganizationsSetup.Events`, where an app ends the access it hangs on the membership), they are mailed,
 /// and the removal is recorded (`MembershipRemoval`). Their account stays. Who may do it is the removal's own rule: the
 /// app's organisation managers, the person themself, and whoever else the app grants. Throws the sentence to show when
-/// it cannot be done (`RemovalProblem` — the last owner, by name), and the refusal when the caller may not.
+/// it cannot be done (`RemovalProblem` — the last owner, by name; or one of the app's own rules refusing to take a role
+/// they hold there, in that rule's words — recorded as a refused removal, with nothing of it done), and the refusal
+/// when the caller may not.
 public MembershipRemoval RemoveMember(Organization org, Principal person) {
   var me = Session.CurrentUser;
   if (me == null) { throw new ValidationException("Sign in to take somebody out of an organisation."); }
@@ -467,6 +482,9 @@ public MembershipRemoval RemoveMember(Organization org, Principal person) {
   if (problem != "") { throw new ValidationException(problem); }
   var made = new MembershipRemoval { Organization = org, Member = person, RemovedBy = me!, At = DateTime.UtcNow };
   UnitOfWork.Commit();
+  // Its run applied it in that commit — or refused it (one of the app's own rules on a role they hold there), and then
+  // nothing of it was done: the caller reads why.
+  if (made.State == MembershipRemovalState.Refused) { throw new ValidationException(made.Refusal ?? "They were not taken out."); }
   return made;
 }
 

@@ -1,0 +1,104 @@
+// The app's own rules on the kit's types hold inside the kit's removal: a removal the app's rule refuses is refused WHOLE
+// — nothing of it lands, and whoever asked reads the rule's own sentence.
+// SECURITY-INVARIANT(an-apps-deny-binds-every-kits-code).
+
+using Osysharp.Identity;
+using Osysharp.Organizations;
+using Osysharp.Mail;
+using Osysharp.Workflow;
+using OrganizationsKitTests;
+
+[TestFixture]
+void AcmeWithAKeyholder() {
+  var sam = new Person { Email = "sam@supplier.test", DisplayName = "Sam", CodeHash = Security.HashPassword("1111"),
+                         EmailVerifiedAt = DateTime.UtcNow };
+  new RoleGrant { Member = sam, Role = PortalRole.Staff };
+  var acme = new Company { Name = "Acme" };
+  var bea = new Person { Email = "bea@acme.com", DisplayName = "Bea", CodeHash = Security.HashPassword("4444"), EmailVerifiedAt = DateTime.UtcNow };
+  var kay = new Person { Email = "kay@acme.com", DisplayName = "Kay", CodeHash = Security.HashPassword("3333"), EmailVerifiedAt = DateTime.UtcNow };
+  var mb = new Membership { Organization = acme, Member = bea };
+  new MembershipRole { Membership = mb, Role = PortalRole.Buyer };
+  var mk = new Membership { Organization = acme, Member = kay };
+  new MembershipRole { Membership = mk, Role = PortalRole.Keyholder };
+  new MembershipRole { Membership = mk, Role = PortalRole.Viewer };
+  new CompanyDesk { Company = acme, Holder = kay };
+  new Membership { Organization = acme, Member = new Person { Email = "bo@acme.com", DisplayName = "Brittle", CodeHash = Security.HashPassword("6666"), EmailVerifiedAt = DateTime.UtcNow } };
+}
+
+principal Sam => Person.Single(p => p.Email == "sam@supplier.test");
+principal Kay => Person.Single(p => p.Email == "kay@acme.com");
+
+Company TheCompany() { return Company.Single(c => c.Name == "Acme"); }
+
+/// Nothing of a removal landed: Kay is in Acme with both roles and her desk, no removal is on record, nobody was mailed.
+void AssertKayIsUntouched() {
+  runas (Sam) {
+    Assert.Equal(1, Membership.Count(m => m.Member == Kay));
+    Assert.Equal(2, MembershipRole.Count(r => r.Membership.Member == Kay));
+    Assert.Equal(1, CompanyDesk.Count(d => d.Holder == Kay));
+    Assert.Equal(0, MembershipRemoval.Count(r => r.Member == Kay && r.State != MembershipRemovalState.Refused));
+  }
+  runas (AuthBootstrap) { Assert.Equal(0, OutgoingMail.Count(m => m.To == "kay@acme.com")); }
+}
+
+/// …and the one removal asked for is on record as refused, with the rule's own sentence and nothing else.
+void AssertTheRemovalIsRecordedRefused() {
+  runas (Sam) {
+    var r = MembershipRemoval.Single(x => x.Member == Kay);
+    Assert.Equal(MembershipRemovalState.Refused, r.State);
+    Assert.Equal("A keyholder hands the keys back at the desk first.", r.Refusal);
+  }
+}
+
+[Test(AcmeWithAKeyholder)]
+void a_removal_the_apps_rule_refuses_is_refused_whole_in_the_rules_words() {
+  runas (Sam) {
+    var refusal = Assert.Throws<ValidationException>(() => RemoveMember(TheCompany(), Kay));
+    Assert.Equal("A keyholder hands the keys back at the desk first.", refusal.Message);
+  }
+  AssertKayIsUntouched();
+  AssertTheRemovalIsRecordedRefused();
+}
+
+[Test(AcmeWithAKeyholder)]
+void leaving_is_refused_whole_too() {
+  runas (Kay) {
+    var refusal = Assert.Throws<ValidationException>(() => RemoveMember(TheCompany(), Kay));
+    Assert.Equal("A keyholder hands the keys back at the desk first.", refusal.Message);
+  }
+  AssertKayIsUntouched();
+  AssertTheRemovalIsRecordedRefused();
+}
+
+[Test(AcmeWithAKeyholder)]
+void the_bare_steps_are_refused_in_the_rules_words() {
+  runas (Sam) {
+    var revoke = Assert.Throws(() => RevokeIn(TheCompany(), Kay, PortalRole.Keyholder));
+    Assert.Contains("A keyholder hands the keys back at the desk first.", revoke.Message);
+    var leave = Assert.Throws(() => Leave(TheCompany(), Kay));
+    Assert.Contains("A keyholder hands the keys back at the desk first.", leave.Message);
+  }
+  AssertKayIsUntouched();
+  runas (Sam) { Assert.Equal(0, MembershipRemoval.Count(r => r.Member == Kay)); }
+}
+
+// The control: a role no rule names goes, and so does its holder.
+[Test(AcmeWithAKeyholder)]
+void a_role_no_rule_names_is_taken_as_before() {
+  runas (Sam) { RevokeIn(TheCompany(), Kay, PortalRole.Viewer); }
+  runas (Sam) { Assert.Equal(1, MembershipRole.Count(r => r.Membership.Member == Kay)); }
+}
+
+// Only a rule's refusal is a refused removal. A fault in the removal — here the app's own hook breaking — is a fault of
+// the run: it is never recorded as "refused", and its text is never said as a reason.
+[Test(AcmeWithAKeyholder)]
+void a_fault_in_the_removal_is_not_recorded_as_a_refusal() {
+  runas (Sam) { RemoveMember(TheCompany(), Person.Single(p => p.Email == "bo@acme.com")); }
+  runas (Sam) {
+    var brittle = Person.Single(p => p.Email == "bo@acme.com");
+    var r = MembershipRemoval.Single(x => x.Member == brittle);
+    Assert.NotEqual(MembershipRemovalState.Refused, r.State);
+    Assert.Null(r.Refusal);
+    Assert.Equal(1, Membership.Count(m => m.Member == brittle));
+  }
+}

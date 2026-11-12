@@ -6,7 +6,7 @@ using Osysharp.Organizations;
 // A supplier's portal. Its own people (staff) look after the companies; a company's people see their own company, and a
 // company's BUYER may place orders for it — a role held at that company and nowhere else.
 
-[Role] enum PortalRole { Authenticator, Staff, Buyer, Viewer }
+[Role] enum PortalRole { Authenticator, Staff, Buyer, Viewer, Keyholder }
 
 policy IsStaff => RoleGrant.Any(g => g.Member == user && g.Role == PortalRole.Staff);
 /// The kit's question, answered by the app: staff look after the companies.
@@ -70,7 +70,14 @@ app.Audit = new AuditConfig { Redact = new AuditRedaction { Properties = [Organi
 /// What a company's own admin may do in the app's rules — a buyer adds the company's people. An ordinary grant over the
 /// kit's types, ORed with the kit's own: the kit's floors (no self-granted role, no Authenticator) still hold.
 partial entity Membership { security { allow create, update where HoldsRoleIn(Organization, PortalRole.Buyer); } }
-partial entity MembershipRole { security { allow create where HoldsRoleIn(Membership.Organization, PortalRole.Buyer); } }
+/// …and the app's own deny on the kit's type: a keyholder's role is never taken away — not by staff, and not by the kit's
+/// own removal either (tests/app-rules.test.osy).
+partial entity MembershipRole {
+  security {
+    allow create where HoldsRoleIn(Membership.Organization, PortalRole.Buyer);
+    deny delete where Role == PortalRole.Keyholder message "A keyholder hands the keys back at the desk first.";
+  }
+}
 
 /// The portal's own kind of membership at a customer company — what the supplier keeps about a person there. Every
 /// membership the kit makes at a company is one of these (`OrganizationsSetup.Memberships`); at a team, the kit's own.
@@ -106,6 +113,8 @@ entity CompanyDesk {
 /// What the portal ends when a person is taken out of a company: the desks they held there.
 public class PortalMembershipEvents : MembershipEvents {
   public override void Removed(MembershipRemoval removal) {
+    // A hook of the app's that breaks — a fault, which is not a rule's refusal (tests/app-rules.test.osy).
+    if (removal.Member.DisplayName == "Brittle") { throw new InvalidOperationException("the portal's desk ledger is out of step"); }
     foreach (var d in CompanyDesk.Where(x => x.Company.Id == removal.Organization.Id && x.Holder == removal.Member).ToList()) { d.Delete(); }
   }
 }
