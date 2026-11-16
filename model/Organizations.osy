@@ -64,6 +64,8 @@ public entity Organization {
     allow read when ManagesOrganizations || IsAuthenticator;
     // Its own people see it — their company's name, their team.
     allow read when IsOrganizationMember where Membership.Any(m => m.Organization.Id == Id && m.Member == user);
+    // …and whoever puts people in it (`ManagesMemberships`) reads where they are putting them, and changes nothing.
+    allow read when ManagesMemberships;
     allow create, update when ManagesOrganizations;
   }
 }
@@ -118,6 +120,11 @@ public entity Membership {
       where Member == user
          || Membership.Any(m => m.Organization == Organization && m.Member == user);
     allow create, update, delete when ManagesOrganizations;
+    // A kit's run that puts a person in an organisation or wakes their membership (an invitation's, a manager's recorded
+    // change) — `Join`; one that takes them out (a manager's recorded change) — `Leave` — is asked apart.
+    allow read, create when ManagesMemberships;
+    allow update IsActive when ManagesMemberships;
+    allow read, delete when RemovesMemberships;
     // The sign-in flow places a person by their proven address (`JoinByDomain`), and makes no other membership.
     allow create when IsAuthenticator where Source == MembershipSource.Domain;
     // SECURITY-INVARIANT(organizations-domain-joins-only-a-proven-address): a membership made by a mail domain is made
@@ -150,6 +157,9 @@ public entity MembershipRole {
     // Each person sees the roles they hold — a page asks before it offers something.
     allow read when IsAuthenticated where Membership.Member == user;
     allow create, delete when ManagesOrganizations;
+    // …and the roles held there (`GrantIn`; `RevokeIn` is `RemovesMemberships`').
+    allow read, create when ManagesMemberships;
+    allow read, delete when RemovesMemberships;
     // The sign-in flow gives a person who joins by a domain the domain's role (`JoinByDomain`), and nothing else.
     allow create when IsAuthenticator where Membership.Source == MembershipSource.Domain;
     // ⚑ `IsAuthenticated`: the floor is about a PERSON giving themself a role. With nobody acting — a workflow body, a
@@ -243,6 +253,18 @@ Membership NewMembership(Organization org, Principal person, MembershipSource so
 }
 
 // ── policies an app writes its rules with ───────────────────────────────────────────────────────────────────────────
+
+/// Who puts people in organisations (or wakes a suspended membership) and gives the roles they hold there, besides the
+/// app's `ManagesOrganizations`: nobody, until the app says so — or a kit that uses this one, for its own actor alone
+/// (`policy ManagesMemberships += user == Actor.Of<InvitationRun>();` — an invitation into an organisation). It never
+/// makes, renames or removes an organisation, and never takes anybody out: that is `RemovesMemberships`.
+[Extensible] virtual policy ManagesMemberships => false;
+
+/// Who takes people out of organisations and takes away the roles they hold there, besides the app's
+/// `ManagesOrganizations`: nobody, until the app says so — or a kit that uses this one, for its own actor alone
+/// (`policy RemovesMemberships += user == Actor.Of<AccessChanger>();` — a manager's recorded change). It reads and
+/// deletes memberships and the roles held in them, and makes none.
+[Extensible] virtual policy RemovesMemberships => false;
 
 /// Is the caller an active member of `o`?  `allow read where IsMemberOf(Company)`.
 policy IsMemberOf(Organization o) => Membership.Any(m => m.Organization == o && m.Member == user && m.IsActive);
