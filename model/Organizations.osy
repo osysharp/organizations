@@ -496,12 +496,14 @@ void ApplyRemoval(MembershipRemoval removal) {
 /// app's organisation managers, the person themself, and whoever else the app grants. Throws the sentence to show when
 /// it cannot be done (`RemovalProblem` — the last owner, by name; or one of the app's own rules refusing to take a role
 /// they hold there, in that rule's words — recorded as a refused removal, with nothing of it done), and the refusal
-/// when the caller may not.
+/// when the caller may not — asked first: a caller the removal's rule refuses is refused before they hear why the person could
+/// not be taken out, and a removal refused for its reason is recorded as refused.
 public MembershipRemoval RemoveMember(Organization org, Principal person) {
   var me = Session.CurrentUser;
   if (me == null) { throw new ValidationException("Sign in to take somebody out of an organisation."); }
-  var problem = RemovalProblem(org, person);
-  if (problem != "") { throw new ValidationException(problem); }
+  // AUTHORIZE, THEN VALIDATE: the removal is recorded first, so the caller the removal's `create` rule refuses is refused before
+  // they hear why the person could not be taken out (the last owner, by name — `RemovalProblem`); the run that applies it
+  // asks `RemovalProblem` in that same commit and records the sentence as its refusal, which is thrown below.
   var made = new MembershipRemoval { Organization = org, Member = person, RemovedBy = me!, At = DateTime.UtcNow };
   UnitOfWork.Commit();
   // Its run applied it in that commit — or refused it (one of the app's own rules on a role they hold there), and then
